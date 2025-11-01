@@ -36,9 +36,11 @@ git push origin main
 1. Click "**New +**" → "**Blueprint**"
 2. Connect your repository
 3. Render will detect `render.yaml` and show you:
-   - `trump-prediction-api` (Web Service)
-   - `trump-prediction-collector` (Background Worker)
+   - `trump-prediction-api` (Web Service) - **FREE**
+   - `trump-prediction-collector` (Cron Job) - **FREE** ✅
 4. Click "**Apply**"
+
+**Note:** We use a Cron Job instead of a background worker to stay on the free tier!
 
 ### Step 4: Configure Environment Variables
 
@@ -52,15 +54,16 @@ DATABASE_URL=sqlite:///./data/trump_predictions.db
 ENVIRONMENT=production
 ```
 
-For **trump-prediction-collector**:
+For **trump-prediction-collector** (Cron Job):
 1. Go to service → "Environment"
 2. Add same variables plus:
 
 ```
-RUN_CONTINUOUS=true
 APIFY_API_TOKEN=your-token-here (optional)
 SCRAPECREATORS_API_KEY=your-key-here (optional)
 ```
+
+**Note:** The collector runs every 30 minutes automatically via Cron. No need for RUN_CONTINUOUS!
 
 ### Step 5: Deploy!
 
@@ -293,9 +296,25 @@ To **disable** auto-deploy:
 
 ### Collector Not Running
 
-1. **Check Render Worker logs**
-2. **Verify RUN_CONTINUOUS=true**
-3. **Ensure API keys are set**
+1. **Check Render Cron Job logs**
+   - Go to Cron service → "Logs" tab
+   - View execution history
+
+2. **Verify Cron schedule**
+   - Default: Every 30 minutes (`*/30 * * * *`)
+   - Check "Cron Jobs" section in Render dashboard
+
+3. **Check last run status**
+   - Successful runs show "Exit code: 0"
+   - Failed runs show error messages
+
+4. **Ensure API keys are set**
+   - At least one of: APIFY_API_TOKEN or SCRAPECREATORS_API_KEY
+   - Or it will only use GitHub archive (historical data)
+
+5. **Manually trigger run** (for testing)
+   - Go to Cron Job → "Manual Deploy" → "Deploy latest commit"
+   - This triggers an immediate run
 
 ---
 

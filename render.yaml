@@ -22,13 +22,14 @@ services:
         value: 0.0.0.0
     autoDeploy: true
     
-  # Background Data Collection Worker
-  - type: worker
+  # Data Collection Cron Job (runs every 30 minutes)
+  - type: cron
     name: trump-prediction-collector
     runtime: python
-    plan: free  # Free tier
+    plan: free  # Free tier - Cron jobs are FREE!
+    schedule: "*/30 * * * *"  # Every 30 minutes
     buildCommand: pip install -r requirements.txt
-    startCommand: python src/data/collector.py
+    startCommand: python scripts/cron_collect.py
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -36,8 +37,6 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
-      - key: RUN_CONTINUOUS
-        value: true
       - key: APIFY_API_TOKEN
         sync: false
       - key: SCRAPECREATORS_API_KEY
