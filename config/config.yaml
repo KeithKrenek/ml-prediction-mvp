@@ -1,0 +1,92 @@
+# Main Configuration File for Trump Prediction MVP
+
+# Data Collection
+data_collection:
+  poll_interval_minutes: 5
+  trump_user_id: "107780257626128497"
+  historical_data_path: "data/raw/historical"
+  
+# Timing Model Configuration
+timing_model:
+  type: "prophet"  # Options: prophet, survival, neural_tpp
+  prophet:
+    daily_seasonality: true
+    weekly_seasonality: true
+    yearly_seasonality: false
+    changepoint_prior_scale: 0.05
+    interval_width: 0.95
+  
+  # For future Neural TPP implementation
+  neural_tpp:
+    hidden_size: 64
+    num_layers: 2
+    learning_rate: 0.001
+    epochs: 50
+
+# Content Model Configuration
+content_model:
+  type: "claude_api"  # Options: claude_api, gpt2_finetuned, phi3_finetuned
+  claude_api:
+    model: "claude-sonnet-4-5-20250929"
+    max_tokens: 280
+    temperature: 0.8
+    num_examples: 10  # Number of example posts in few-shot prompt
+  
+  # For future fine-tuned models
+  finetuned:
+    model_path: "models/finetuned"
+    max_length: 280
+
+# Feature Engineering
+features:
+  temporal:
+    - hour
+    - day_of_week
+    - is_weekend
+    - is_business_hours
+    - time_since_last_post
+  
+  context:
+    - recent_news
+    - stock_market
+    - trending_topics
+
+# Evaluation Metrics
+evaluation:
+  timing_metrics:
+    - mae
+    - within_6h_accuracy
+    - within_24h_accuracy
+  
+  content_metrics:
+    - bertscore
+    - bleu
+    - perplexity
+
+# Database
+database:
+  url: "sqlite:///./data/trump_predictions.db"
+  pool_size: 5
+  echo: false
+
+# API Configuration
+api:
+  title: "Trump Post Prediction API"
+  version: "0.1.0"
+  description: "ML-powered prediction of Trump's next Truth Social post"
+  host: "0.0.0.0"
+  port: 8000
+
+# Dashboard
+dashboard:
+  title: "Trump Post Predictor"
+  refresh_interval_seconds: 60
+  show_confidence_intervals: true
+  max_historical_predictions: 100
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "{time} | {level} | {message}"
+  rotation: "500 MB"
+  retention: "10 days"

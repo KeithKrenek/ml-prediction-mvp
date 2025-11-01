@@ -1,0 +1,52 @@
+# render.yaml - Render.com deployment configuration
+
+services:
+  # FastAPI Backend
+  - type: web
+    name: trump-prediction-api
+    runtime: python
+    plan: free  # Free tier
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ANTHROPIC_API_KEY
+        sync: false  # Set manually in Render dashboard
+      - key: DATABASE_URL
+        sync: false  # Set manually or use Render PostgreSQL
+      - key: ENVIRONMENT
+        value: production
+      - key: API_HOST
+        value: 0.0.0.0
+    autoDeploy: true
+    
+  # Background Data Collection Worker
+  - type: worker
+    name: trump-prediction-collector
+    runtime: python
+    plan: free  # Free tier
+    buildCommand: pip install -r requirements.txt
+    startCommand: python src/data/collector.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: RUN_CONTINUOUS
+        value: true
+      - key: APIFY_API_TOKEN
+        sync: false
+      - key: SCRAPECREATORS_API_KEY
+        sync: false
+    autoDeploy: true
+
+# Optional: PostgreSQL Database (uncomment for production)
+# databases:
+#   - name: trump-prediction-db
+#     plan: free  # Free tier: 90 days, then $7/month
+#     databaseName: trump_predictions
+#     user: trump_user
