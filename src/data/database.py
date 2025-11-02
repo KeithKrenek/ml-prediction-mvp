@@ -127,6 +127,15 @@ def get_engine(database_url=None):
     if database_url is None:
         database_url = os.getenv('DATABASE_URL', 'sqlite:///./data/trump_predictions.db')
 
+    # Create data directory if using SQLite and directory doesn't exist
+    if database_url.startswith('sqlite:///'):
+        # Extract the file path from the URL
+        db_path = database_url.replace('sqlite:///', '')
+        db_dir = os.path.dirname(db_path)
+        if db_dir and not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            print(f"Created database directory: {db_dir}")
+
     custom_dumper = partial(json.dumps, default=custom_json_serializer)
 
     engine = create_engine(database_url, echo=False, json_serializer=custom_dumper)
