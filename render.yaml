@@ -26,7 +26,7 @@ services:
   - type: cron
     name: trump-prediction-collector
     runtime: python
-    plan: free  # Free tier - Cron jobs are FREE!
+    plan: starter
     schedule: "*/30 * * * *"  # Every 30 minutes
     buildCommand: pip install -r requirements.txt
     startCommand: python scripts/cron_collect.py
