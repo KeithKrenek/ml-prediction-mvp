@@ -17,6 +17,7 @@ python-multipart==0.0.6
 
 # Database
 sqlalchemy==2.0.25
+psycopg2
 
 # Data Collection
 requests==2.31.0
