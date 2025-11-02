@@ -22,6 +22,11 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# For Streamlit Cloud: Load secrets as environment variables
+if hasattr(st, 'secrets'):
+    for key, value in st.secrets.items():
+        os.environ[key] = str(value)
+
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
