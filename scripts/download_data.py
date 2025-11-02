@@ -31,8 +31,14 @@ class HistoricalDataDownloader:
         self.datasets = {
             'trump_archive': {
                 'url': 'https://raw.githubusercontent.com/stiles/trump-truth-social-archive/main/data/posts.json',
-                'description': 'Trump Truth Social Archive (discontinued Oct 2024)',
+                'description': 'Trump Truth Social Archive (Feb 2022 - Oct 2024)',
                 'format': 'json'
+            },
+            # Trump 2024 Campaign Dataset (most recent!)
+            'trump_2024_campaign': {
+                'url': 'https://huggingface.co/datasets/muhammetakkurt/trump-2024-campaign-truthsocial-truths/resolve/main/trump_truthsocial_dataset.csv',
+                'description': 'Trump 2024 Campaign Truth Social Posts (Recent)',
+                'format': 'csv'
             },
             # Trump Twitter Archive - Complete with deleted tweets
             'twitter_before_office': {
@@ -45,11 +51,12 @@ class HistoricalDataDownloader:
                 'description': 'Trump Twitter Archive - In Office (2017-2021)',
                 'format': 'csv'
             },
-            # We'll use direct GitHub API to check for CSV files
+            # TruthSocial 2024 Election Initiative (1.5M posts, Feb-Oct 2024)
             'election_initiative_github': {
                 'owner': 'kashish-s',
                 'repo': 'TruthSocial_2024ElectionInitiative',
-                'description': 'TruthSocial 2024 Election Initiative'
+                'description': 'TruthSocial 2024 Election Initiative (1.5M posts)',
+                'note': 'Large dataset - includes many accounts, filter for Trump'
             }
         }
     
@@ -136,6 +143,31 @@ class HistoricalDataDownloader:
             return combined
         else:
             logger.warning("No Twitter data downloaded")
+            return None
+
+    def download_trump_2024_campaign(self):
+        """Download Trump's 2024 campaign Truth Social posts (RECENT DATA!)"""
+        logger.info("Downloading Trump 2024 Campaign Truth Social data...")
+
+        try:
+            url = self.datasets['trump_2024_campaign']['url']
+            logger.info(f"Downloading from Hugging Face: {url}")
+            response = requests.get(url, timeout=120)
+            response.raise_for_status()
+
+            # Save raw CSV
+            output_file = self.data_dir / 'trump_2024_campaign.csv'
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(response.text)
+
+            # Parse CSV
+            df = pd.read_csv(output_file)
+            logger.success(f"Downloaded {len(df)} posts from 2024 campaign")
+
+            return df
+
+        except Exception as e:
+            logger.error(f"Failed to download 2024 campaign data: {e}")
             return None
     
     def download_election_initiative(self):
@@ -234,6 +266,72 @@ class HistoricalDataDownloader:
             logger.info(f"Date range: {df_processed['created_at'].min()} to {df_processed['created_at'].max()}")
 
         return df_processed
+
+    def process_truthsocial_data(self, df):
+        """Process Truth Social data to match our database schema"""
+        if df is None or df.empty:
+            logger.warning("No Truth Social data to process")
+            return pd.DataFrame()
+
+        logger.info("Processing Truth Social data...")
+
+        # Standardize column names for Truth Social
+        column_mapping = {
+            'content': 'content',
+            'text': 'content',
+            'body': 'content',
+            'created_at': 'created_at',
+            'date': 'created_at',
+            'published_at': 'created_at',
+            'id': 'post_id',
+            'truth_id': 'post_id',
+            'post_id': 'post_id',
+            'repost_count': 'reblogs_count',
+            'reposts_count': 'reblogs_count',
+            'reblogs_count': 'reblogs_count',
+            'like_count': 'favourites_count',
+            'likes_count': 'favourites_count',
+            'favourites_count': 'favourites_count',
+            'reply_count': 'replies_count',
+            'replies_count': 'replies_count',
+            'media_url': 'url',
+            'post_url': 'url'
+        }
+
+        # Rename columns
+        df_processed = df.copy()
+        for old_col, new_col in column_mapping.items():
+            if old_col in df_processed.columns and new_col not in df_processed.columns:
+                df_processed.rename(columns={old_col: new_col}, inplace=True)
+
+        # Parse timestamps
+        if 'created_at' in df_processed.columns:
+            df_processed['created_at'] = pd.to_datetime(df_processed['created_at'], errors='coerce')
+
+        # Ensure we have required columns
+        if 'post_id' not in df_processed.columns:
+            # Generate post IDs if missing
+            df_processed['post_id'] = [f"ts_{i}_{int(pd.Timestamp.now().timestamp())}" for i in range(len(df_processed))]
+            logger.warning("Generated post_ids as they were missing")
+
+        if 'content' not in df_processed.columns:
+            logger.error("Missing content column in Truth Social data")
+            return pd.DataFrame()
+
+        # Add platform indicator
+        df_processed['platform'] = 'truthsocial'
+
+        # Sort by timestamp
+        if 'created_at' in df_processed.columns:
+            df_processed = df_processed.sort_values('created_at')
+
+        logger.info(f"Processed {len(df_processed)} Truth Social posts")
+        if not df_processed.empty and 'created_at' in df_processed.columns:
+            valid_dates = df_processed['created_at'].dropna()
+            if not valid_dates.empty:
+                logger.info(f"Date range: {valid_dates.min()} to {valid_dates.max()}")
+
+        return df_processed
     
     def load_to_database(self, df, source_name="unknown"):
         """Load processed posts into database"""
@@ -306,24 +404,24 @@ class HistoricalDataDownloader:
 
         total_posts_added = 0
 
-        # 1. Download and process Twitter Archive (primary source - includes deleted tweets)
-        logger.info("\n### Downloading Twitter Archive (2009-2021) ###")
-        twitter_data = self.download_twitter_archive()
+        # 1. Download 2024 Campaign Data (MOST RECENT - PRIORITY!)
+        logger.info("\n### Downloading Trump 2024 Campaign Data (RECENT!) ###")
+        campaign_2024_data = self.download_trump_2024_campaign()
 
-        if twitter_data is not None and not twitter_data.empty:
+        if campaign_2024_data is not None and not campaign_2024_data.empty:
             # Process and load to database
-            df_twitter = self.process_twitter_data(twitter_data)
-            if not df_twitter.empty:
-                added = self.load_to_database(df_twitter, source_name="Twitter Archive")
+            df_2024 = self.process_truthsocial_data(campaign_2024_data)
+            if not df_2024.empty:
+                added = self.load_to_database(df_2024, source_name="2024 Campaign")
                 total_posts_added += added
 
                 # Save processed CSV
-                output_csv = self.data_dir / 'twitter_posts_processed.csv'
-                df_twitter.to_csv(output_csv, index=False)
-                logger.success(f"Saved processed Twitter data to {output_csv}")
+                output_csv = self.data_dir / '2024_campaign_processed.csv'
+                df_2024.to_csv(output_csv, index=False)
+                logger.success(f"Saved processed 2024 campaign data to {output_csv}")
 
-        # 2. Download Truth Social Archive
-        logger.info("\n### Downloading Truth Social Archive ###")
+        # 2. Download Truth Social Archive (Feb 2022 - Oct 2024)
+        logger.info("\n### Downloading Truth Social Archive (2022-2024) ###")
         trump_data = self.download_trump_archive()
 
         if trump_data:
@@ -338,13 +436,34 @@ class HistoricalDataDownloader:
                 df_truth.to_csv(output_csv, index=False)
                 logger.success(f"Saved processed Truth Social data to {output_csv}")
 
-        # 3. Check for Election Initiative data
+        # 3. Download Twitter Archive (historical context - 2009-2021)
+        logger.info("\n### Downloading Twitter Archive (2009-2021 - Historical) ###")
+        twitter_data = self.download_twitter_archive()
+
+        if twitter_data is not None and not twitter_data.empty:
+            # Process and load to database
+            df_twitter = self.process_twitter_data(twitter_data)
+            if not df_twitter.empty:
+                added = self.load_to_database(df_twitter, source_name="Twitter Archive")
+                total_posts_added += added
+
+                # Save processed CSV
+                output_csv = self.data_dir / 'twitter_posts_processed.csv'
+                df_twitter.to_csv(output_csv, index=False)
+                logger.success(f"Saved processed Twitter data to {output_csv}")
+
+        # 4. Check for Election Initiative data (optional - very large)
         logger.info("\n### Checking for TruthSocial 2024 Election Initiative ###")
         self.download_election_initiative()
 
         logger.info("="*50)
         logger.info(f"Pipeline Complete! Total posts added: {total_posts_added}")
         logger.info("="*50)
+        logger.info("\nData Timeline Coverage:")
+        logger.info("  - 2024 Campaign: Most recent Truth Social posts")
+        logger.info("  - 2022-2024: Truth Social archive (Feb 2022 - Oct 2024)")
+        logger.info("  - 2009-2021: Twitter archive (historical context)")
+        logger.info("\nRecommendation: Focus model training on 2022-2024 data for best accuracy!")
 
         return total_posts_added
 
