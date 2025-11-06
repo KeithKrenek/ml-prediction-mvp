@@ -77,6 +77,16 @@ api:
   host: "0.0.0.0"
   port: 8000
 
+# Prediction Scheduling
+scheduling:
+  enabled: true  # Enable automatic predictions
+  prediction_interval_hours: 6  # Make predictions every 6 hours
+  # Alternative: cron expression (e.g., "0 */6 * * *" for every 6 hours)
+  cron_expression: null  # If set, overrides prediction_interval_hours
+  max_concurrent_predictions: 1  # Prevent overlapping jobs
+  retry_on_failure: true
+  retry_delay_minutes: 30
+
 # Dashboard
 dashboard:
   title: "Trump Post Predictor"

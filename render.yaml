@@ -43,6 +43,25 @@ services:
         sync: false
     autoDeploy: true
 
+  # Prediction Cron Job (runs every 6 hours)
+  - type: cron
+    name: trump-prediction-scheduler
+    runtime: python
+    plan: starter
+    schedule: "0 */6 * * *"  # Every 6 hours (at 00:00, 06:00, 12:00, 18:00)
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/cron_predict.py
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: ANTHROPIC_API_KEY
+        sync: false  # Required for content generation
+      - key: DATABASE_URL
+        sync: false
+      - key: ENVIRONMENT
+        value: production
+    autoDeploy: true
+
 # Optional: PostgreSQL Database (uncomment for production)
 # databases:
 #   - name: trump-prediction-db

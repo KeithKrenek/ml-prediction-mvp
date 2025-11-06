@@ -150,7 +150,7 @@ Output example:
    Confidence: 75.3%
 
 📝 PREDICTED CONTENT:
-   The Fake News Media is at it again! They don't want you to 
+   The Fake News Media is at it again! They don't want you to
    know the TRUTH. America is doing better than ever. MAGA!
    Confidence: 70.0%
 
@@ -158,9 +158,46 @@ Output example:
 ============================================================
 ```
 
+### Automated Predictions (NEW! ⏰)
+
+The system now supports **automatic prediction scheduling**:
+
+**Option 1: In-Process Scheduler (Development)**
+```bash
+# Enable scheduling in config/config.yaml:
+# scheduling:
+#   enabled: true
+#   prediction_interval_hours: 6
+
+# Start the API (scheduler starts automatically)
+uvicorn src.api.main:app --reload
+```
+
+**Option 2: Cron Job (Production - Recommended)**
+- Predictions run automatically every 6 hours on Render.com
+- Configured in `render.yaml` (already set up)
+- Completely free on Render's free tier
+- See [SCHEDULING.md](SCHEDULING.md) for full documentation
+
+**Control via API:**
+```bash
+# Check scheduler status
+curl http://localhost:8000/scheduler/status
+
+# Enable/disable scheduler
+curl -X POST http://localhost:8000/scheduler/control \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+
+# Manually trigger prediction
+curl -X POST http://localhost:8000/scheduler/trigger
+```
+
+📖 **See [SCHEDULING.md](SCHEDULING.md) for complete scheduling documentation**
+
 ### Configuration
 
-Edit `config/config.yaml` to customize model behavior.
+Edit `config/config.yaml` to customize model behavior and scheduling intervals.
 
 ---
 
