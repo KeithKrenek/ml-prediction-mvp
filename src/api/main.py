@@ -34,7 +34,8 @@ load_dotenv()
 
 # Import prediction system
 from src.predictor import TrumpPostPredictor
-from src.data.database import get_session, Prediction, Post
+from src.data.database import get_session, Prediction, Post, ModelVersion, TrainingRun, ModelEvaluation
+from src.models.model_registry import ModelRegistry
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -59,6 +60,9 @@ predictor: Optional[TrumpPostPredictor] = None
 
 # Global scheduler instance
 scheduler: Optional[BackgroundScheduler] = None
+
+# Global model registry instance
+model_registry = ModelRegistry()
 
 # Prediction job lock (prevents overlapping predictions)
 prediction_job_lock = threading.Lock()
@@ -703,6 +707,265 @@ async def trigger_scheduled_prediction():
         raise HTTPException(
             status_code=500,
             detail=f"Failed to trigger prediction: {str(e)}"
+        )
+
+
+# ============================================================================
+# Model Management Endpoints
+# ============================================================================
+
+@app.get("/models/versions", tags=["Models"])
+async def get_model_versions(
+    model_type: Optional[str] = None,
+    limit: int = 20
+):
+    """
+    Get all model versions.
+
+    Parameters:
+    - model_type: Filter by type ('timing' or 'content')
+    - limit: Maximum number of versions to return (default: 20, max: 100)
+    """
+
+    if limit > 100:
+        limit = 100
+
+    try:
+        versions = model_registry.get_all_versions(model_type=model_type, limit=limit)
+
+        results = []
+        for v in versions:
+            results.append({
+                "version_id": v.version_id,
+                "model_type": v.model_type,
+                "algorithm": v.algorithm,
+                "trained_at": v.trained_at,
+                "status": v.status,
+                "is_production": v.is_production,
+                "promoted_at": v.promoted_at,
+                "num_training_samples": v.num_training_samples,
+                "training_duration_seconds": v.training_duration_seconds,
+                "file_size_bytes": v.file_size_bytes,
+                "notes": v.notes
+            })
+
+        return {
+            "versions": results,
+            "count": len(results),
+            "model_type_filter": model_type
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching model versions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch model versions: {str(e)}"
+        )
+
+
+@app.get("/models/production", tags=["Models"])
+async def get_production_models():
+    """Get current production models for timing and content."""
+
+    try:
+        timing_model = model_registry.get_production_model('timing')
+        content_model = model_registry.get_production_model('content')
+
+        return {
+            "timing_model": {
+                "version_id": timing_model.version_id if timing_model else None,
+                "algorithm": timing_model.algorithm if timing_model else None,
+                "trained_at": timing_model.trained_at if timing_model else None,
+                "promoted_at": timing_model.promoted_at if timing_model else None,
+                "num_training_samples": timing_model.num_training_samples if timing_model else None
+            } if timing_model else None,
+            "content_model": {
+                "version_id": content_model.version_id if content_model else None,
+                "algorithm": content_model.algorithm if content_model else None,
+                "trained_at": content_model.trained_at if content_model else None,
+                "promoted_at": content_model.promoted_at if content_model else None,
+                "num_training_samples": content_model.num_training_samples if content_model else None
+            } if content_model else None
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching production models: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch production models: {str(e)}"
+        )
+
+
+@app.get("/models/training-history", tags=["Models"])
+async def get_training_history(limit: int = 10):
+    """
+    Get recent training runs.
+
+    Parameters:
+    - limit: Number of runs to return (default: 10, max: 50)
+    """
+
+    if limit > 50:
+        limit = 50
+
+    try:
+        runs = model_registry.get_training_history(limit=limit)
+
+        results = []
+        for run in runs:
+            results.append({
+                "run_id": run.run_id,
+                "model_version_id": run.model_version_id,
+                "started_at": run.started_at,
+                "completed_at": run.completed_at,
+                "duration_seconds": run.duration_seconds,
+                "status": run.status,
+                "num_training_samples": run.num_training_samples,
+                "test_mae_hours": run.test_mae_hours,
+                "test_within_6h_accuracy": run.test_within_6h_accuracy,
+                "promoted_to_production": run.promoted_to_production,
+                "promotion_reason": run.promotion_reason,
+                "error_message": run.error_message
+            })
+
+        return {
+            "training_runs": results,
+            "count": len(results)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching training history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch training history: {str(e)}"
+        )
+
+
+@app.post("/models/promote/{version_id}", tags=["Models"])
+async def promote_model(version_id: str):
+    """
+    Manually promote a model version to production.
+
+    This will demote the current production model and promote
+    the specified version.
+    """
+
+    try:
+        success = model_registry.promote_to_production(
+            version_id=version_id,
+            reason="Manual promotion via API"
+        )
+
+        if success:
+            return {
+                "status": "success",
+                "message": f"Model {version_id} promoted to production",
+                "version_id": version_id
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to promote model {version_id}"
+            )
+
+    except Exception as e:
+        logger.error(f"Error promoting model: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to promote model: {str(e)}"
+        )
+
+
+@app.post("/models/retrain", tags=["Models"])
+async def trigger_retraining(background_tasks: BackgroundTasks):
+    """
+    Manually trigger model retraining.
+
+    This will start a background task to retrain both timing
+    and content models with the latest data.
+
+    Note: This is a long-running operation (5-10 minutes).
+    Check /models/training-history for progress.
+    """
+
+    try:
+        # Import here to avoid circular dependency
+        import subprocess
+
+        logger.info("Triggering manual model retraining via API...")
+
+        # Run retraining script in background
+        def run_retraining():
+            try:
+                result = subprocess.run(
+                    [sys.executable, "scripts/retrain_models.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=600  # 10 minute timeout
+                )
+                logger.info(f"Retraining completed with code {result.returncode}")
+                if result.stdout:
+                    logger.info(f"Output: {result.stdout}")
+                if result.stderr:
+                    logger.error(f"Errors: {result.stderr}")
+            except Exception as e:
+                logger.error(f"Retraining failed: {e}")
+
+        background_tasks.add_task(run_retraining)
+
+        return {
+            "status": "started",
+            "message": "Model retraining started in background",
+            "note": "Check /models/training-history for progress"
+        }
+
+    except Exception as e:
+        logger.error(f"Error triggering retraining: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to trigger retraining: {str(e)}"
+        )
+
+
+@app.get("/models/compare/{version_a}/{version_b}", tags=["Models"])
+async def compare_models(version_a: str, version_b: str):
+    """
+    Compare two model versions based on their evaluations.
+
+    Returns detailed comparison and recommendation.
+    """
+
+    try:
+        comparison = model_registry.compare_models(version_a, version_b)
+
+        if comparison['comparison'] == 'incomplete':
+            raise HTTPException(
+                status_code=400,
+                detail=comparison['reason']
+            )
+
+        return {
+            "version_a": {
+                "version_id": version_a,
+                "score": comparison['model_a']['score']
+            },
+            "version_b": {
+                "version_id": version_b,
+                "score": comparison['model_b']['score']
+            },
+            "winner": comparison['winner'],
+            "improvement_percentage": comparison['improvement_percentage'],
+            "recommendation": comparison['recommendation'],
+            "reason": comparison['reason']
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error comparing models: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to compare models: {str(e)}"
         )
 
 
