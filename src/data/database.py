@@ -242,6 +242,59 @@ class ModelEvaluation(Base):
         return f"<Evaluation {self.model_version_id} score={self.overall_score}>"
 
 
+class ContextSnapshot(Base):
+    """Store real-time context data for predictions"""
+    __tablename__ = 'context_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id = Column(String, unique=True, index=True)
+    captured_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # News data
+    top_headlines = Column(JSON)  # List of recent news headlines
+    political_news = Column(JSON)  # Politics-specific news
+    news_summary = Column(Text)  # Brief summary of major news
+
+    # Trending topics
+    trending_topics = Column(JSON)  # Google Trends data
+    trending_keywords = Column(JSON)  # Top keywords
+    trend_categories = Column(JSON)  # Categorized trends
+
+    # Market data
+    sp500_value = Column(Float)  # S&P 500 current value
+    sp500_change_pct = Column(Float)  # Daily change %
+    dow_value = Column(Float)  # Dow Jones current value
+    dow_change_pct = Column(Float)  # Daily change %
+    market_sentiment = Column(String)  # 'bullish', 'bearish', 'neutral'
+
+    # Events and calendar
+    upcoming_events = Column(JSON)  # Political events, debates, etc.
+    recent_events = Column(JSON)  # Events from last 24h
+
+    # Social media context
+    twitter_trends = Column(JSON)  # Twitter/X trending topics (if available)
+    viral_topics = Column(JSON)  # Topics going viral
+
+    # Weather/external factors
+    major_weather_events = Column(JSON)  # Hurricanes, storms, etc.
+
+    # Metadata
+    data_sources = Column(JSON)  # Which APIs were used
+    fetch_duration_seconds = Column(Float)
+    fetch_errors = Column(JSON)  # Any errors during fetching
+
+    # Quality metrics
+    completeness_score = Column(Float)  # How complete is this context (0-1)
+    freshness_score = Column(Float)  # How recent is the data (0-1)
+
+    # Usage tracking
+    used_in_predictions = Column(Integer, default=0)  # How many predictions used this
+    prediction_ids = Column(JSON)  # List of prediction IDs using this context
+
+    def __repr__(self):
+        return f"<ContextSnapshot {self.snapshot_id} at {self.captured_at}>"
+
+
 # Database initialization functions
 def get_engine(database_url=None):
     """Get database engine"""

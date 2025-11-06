@@ -34,9 +34,10 @@ load_dotenv()
 
 # Import prediction system
 from src.predictor import TrumpPostPredictor
-from src.data.database import get_session, Prediction, Post, ModelVersion, TrainingRun, ModelEvaluation
+from src.data.database import get_session, Prediction, Post, ModelVersion, TrainingRun, ModelEvaluation, ContextSnapshot
 from src.models.model_registry import ModelRegistry
 from src.validation.validator import PredictionValidator
+from src.context.context_gatherer import RealTimeContextGatherer
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -67,6 +68,9 @@ model_registry = ModelRegistry()
 
 # Global validation instance
 validator = PredictionValidator()
+
+# Global context gatherer instance
+context_gatherer = RealTimeContextGatherer()
 
 # Prediction job lock (prevents overlapping predictions)
 prediction_job_lock = threading.Lock()
@@ -1121,6 +1125,173 @@ async def get_unvalidated_predictions():
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch unvalidated predictions: {str(e)}"
+        )
+
+
+# ============================================================================
+# Context Endpoints
+# ============================================================================
+
+@app.get("/context/current", tags=["Context"])
+async def get_current_context():
+    """
+    Get current real-time context.
+
+    Fetches the latest context from all available sources including:
+    - News headlines (NewsAPI, RSS feeds)
+    - Trending topics (Google Trends)
+    - Stock market data (yfinance)
+
+    The context is cached for 30 minutes to avoid hitting API rate limits.
+    """
+
+    try:
+        context = context_gatherer.get_full_context(save_to_db=True)
+
+        # Format for API response
+        return {
+            "snapshot_id": context.get('snapshot_id'),
+            "captured_at": context.get('captured_at'),
+            "news": {
+                "top_headlines": context.get('top_headlines', [])[:5],  # Top 5 headlines
+                "political_news": context.get('political_news', [])[:3],  # Top 3 political
+                "summary": context.get('news_summary', '')
+            },
+            "trending": {
+                "keywords": context.get('trending_keywords', [])[:10],
+                "categories": context.get('trend_categories', {})
+            },
+            "market": {
+                "sp500": {
+                    "value": context.get('sp500_value'),
+                    "change_pct": context.get('sp500_change_pct')
+                },
+                "dow": {
+                    "value": context.get('dow_value'),
+                    "change_pct": context.get('dow_change_pct')
+                },
+                "sentiment": context.get('market_sentiment', 'neutral')
+            },
+            "metadata": {
+                "data_sources": context.get('data_sources', []),
+                "fetch_duration_seconds": context.get('fetch_duration_seconds'),
+                "completeness_score": context.get('completeness_score'),
+                "freshness_score": context.get('freshness_score'),
+                "errors": context.get('fetch_errors', [])
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching current context: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch context: {str(e)}"
+        )
+
+
+@app.get("/context/summary", tags=["Context"])
+async def get_context_summary():
+    """
+    Get a brief text summary of the current context.
+
+    Returns a human-readable summary that can be used for quick display.
+    """
+
+    try:
+        context = context_gatherer.get_full_context(save_to_db=False)
+        summary = context_gatherer.get_context_summary(context)
+
+        return {
+            "summary": summary,
+            "captured_at": context.get('captured_at')
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating context summary: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate summary: {str(e)}"
+        )
+
+
+@app.get("/context/history", tags=["Context"])
+async def get_context_history(limit: int = 10):
+    """
+    Get historical context snapshots from the database.
+
+    Args:
+        limit: Maximum number of snapshots to return (default: 10)
+
+    Returns:
+        List of context snapshots ordered by most recent first
+    """
+
+    try:
+        session = get_session()
+
+        snapshots = session.query(ContextSnapshot)\
+            .order_by(ContextSnapshot.captured_at.desc())\
+            .limit(limit)\
+            .all()
+
+        results = []
+        for snapshot in snapshots:
+            results.append({
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at,
+                "news_summary": snapshot.news_summary,
+                "trending_keywords": snapshot.trending_keywords[:5] if snapshot.trending_keywords else [],
+                "market_sentiment": snapshot.market_sentiment,
+                "sp500_change_pct": snapshot.sp500_change_pct,
+                "completeness_score": snapshot.completeness_score,
+                "freshness_score": snapshot.freshness_score,
+                "used_in_predictions": snapshot.used_in_predictions
+            })
+
+        session.close()
+
+        return {
+            "snapshots": results,
+            "count": len(results)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching context history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch context history: {str(e)}"
+        )
+
+
+@app.post("/context/refresh", tags=["Context"])
+async def refresh_context():
+    """
+    Force refresh of context data (bypasses cache).
+
+    Use this to get the absolute latest data, but be mindful of API rate limits.
+    """
+
+    try:
+        # Clear cache to force refresh
+        context_gatherer.cache.clear()
+
+        # Fetch fresh context
+        context = context_gatherer.get_full_context(save_to_db=True)
+
+        return {
+            "status": "success",
+            "message": "Context refreshed successfully",
+            "snapshot_id": context.get('snapshot_id'),
+            "captured_at": context.get('captured_at'),
+            "completeness_score": context.get('completeness_score'),
+            "data_sources": context.get('data_sources', [])
+        }
+
+    except Exception as e:
+        logger.error(f"Error refreshing context: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to refresh context: {str(e)}"
         )
 
 

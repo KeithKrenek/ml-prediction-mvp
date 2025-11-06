@@ -123,6 +123,36 @@ validation:
   timing_threshold_hours: 6  # Within 6h = correct timing
   content_threshold: 0.3  # Minimum similarity for correct content
 
+# Real-time Context Integration
+context_integration:
+  enabled: true  # Enable context fetching
+  cache_ttl_minutes: 30  # Cache context for 30 minutes to avoid API limits
+  save_to_database: true  # Save context snapshots to database
+
+  # News API (NewsAPI.org)
+  news_api_enabled: true
+  news_max_articles: 10
+
+  # Google Trends
+  trends_enabled: true
+  trends_num_topics: 10
+
+  # Stock Market Data (yfinance)
+  market_data_enabled: true
+
+  # RSS Feeds (fallback for news)
+  rss_feeds_enabled: true
+  rss_feeds:
+    - https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml
+    - https://feeds.washingtonpost.com/rss/politics
+    - https://www.politico.com/rss/politicopicks.xml
+
+  # Future: Social media trends
+  twitter_trends_enabled: false  # Requires Twitter API (not implemented yet)
+
+  # Future: Political events calendar
+  events_calendar_enabled: false  # Not implemented yet
+
 # Dashboard
 dashboard:
   title: "Trump Post Predictor"

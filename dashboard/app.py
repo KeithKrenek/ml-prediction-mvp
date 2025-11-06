@@ -31,8 +31,9 @@ if hasattr(st, 'secrets'):
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.predictor import TrumpPostPredictor
-from src.data.database import get_session, Post, Prediction
+from src.data.database import get_session, Post, Prediction, ContextSnapshot
 from src.validation.validator import PredictionValidator
+from src.context.context_gatherer import RealTimeContextGatherer
 
 
 # ============================================================================
@@ -230,7 +231,7 @@ st.sidebar.markdown("---")
 # Navigation
 page = st.sidebar.radio(
     "Navigate",
-    ["🎯 Make Prediction", "📊 Dashboard", "🎯 Validation Timeline", "📝 Recent Posts", "⚙️ About"]
+    ["🎯 Make Prediction", "📊 Dashboard", "🎯 Validation Timeline", "📝 Recent Posts", "🌐 Real-time Context", "⚙️ About"]
 )
 
 st.sidebar.markdown("---")
@@ -654,6 +655,215 @@ elif page == "📝 Recent Posts":
     else:
         st.warning("No posts in database yet.")
         st.info("Run the data collector to fetch historical posts:\n```bash\npython src/data/collector.py\n```")
+
+
+# ============================================================================
+# Page: Real-time Context
+# ============================================================================
+
+elif page == "🌐 Real-time Context":
+    st.title("🌐 Real-time Context Integration")
+    st.markdown("View current real-time context data used for predictions.")
+
+    # Initialize context gatherer
+    @st.cache_resource
+    def get_context_gatherer():
+        return RealTimeContextGatherer()
+
+    context_gatherer = get_context_gatherer()
+
+    # Add refresh button
+    col1, col2, col3 = st.columns([2, 1, 1])
+    with col2:
+        if st.button("🔄 Refresh Context", use_container_width=True):
+            context_gatherer.cache.clear()
+            st.rerun()
+
+    # Fetch current context
+    with st.spinner("Fetching real-time context..."):
+        try:
+            context = context_gatherer.get_full_context(save_to_db=True)
+
+            # Display context summary
+            st.markdown("### 📝 Summary")
+            summary = context_gatherer.get_context_summary(context)
+            st.info(summary)
+
+            # Display metadata
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("Completeness", f"{context.get('completeness_score', 0):.0%}")
+            col2.metric("Freshness", f"{context.get('freshness_score', 0):.0%}")
+            col3.metric("Fetch Time", f"{context.get('fetch_duration_seconds', 0):.2f}s")
+            col4.metric("Data Sources", len(context.get('data_sources', [])))
+
+            st.markdown("---")
+
+            # News Headlines Section
+            st.markdown("### 📰 News Headlines")
+            top_headlines = context.get('top_headlines', [])
+
+            if top_headlines:
+                for i, headline in enumerate(top_headlines[:5], 1):
+                    with st.expander(f"**{i}. {headline['title']}**"):
+                        st.markdown(f"**Source:** {headline['source']}")
+                        if headline.get('url'):
+                            st.markdown(f"**Link:** [{headline['url']}]({headline['url']})")
+                        if headline.get('published_at'):
+                            st.markdown(f"**Published:** {headline['published_at']}")
+            else:
+                st.warning("No news headlines available")
+
+            # Political News Section
+            st.markdown("### 🏛️ Political News")
+            political_news = context.get('political_news', [])
+
+            if political_news:
+                for i, news in enumerate(political_news[:3], 1):
+                    with st.expander(f"**{i}. {news['title']}**"):
+                        st.markdown(f"**Source:** {news['source']}")
+                        if news.get('url'):
+                            st.markdown(f"**Link:** [{news['url']}]({news['url']})")
+            else:
+                st.info("No political news available")
+
+            st.markdown("---")
+
+            # Trending Topics Section
+            st.markdown("### 📈 Trending Topics")
+            trending_keywords = context.get('trending_keywords', [])
+
+            if trending_keywords:
+                # Display as tags
+                cols = st.columns(5)
+                for i, keyword in enumerate(trending_keywords[:10]):
+                    col_idx = i % 5
+                    cols[col_idx].markdown(f"`{keyword}`")
+            else:
+                st.info("No trending topics available")
+
+            # Political trends
+            trend_categories = context.get('trend_categories', {})
+            if trend_categories and 'political' in trend_categories:
+                st.markdown("#### Political Interest Levels")
+                political_trends = trend_categories['political']
+
+                # Create bar chart
+                if political_trends:
+                    df_trends = pd.DataFrame([
+                        {'Topic': topic, 'Interest': interest}
+                        for topic, interest in political_trends.items()
+                    ])
+                    fig = px.bar(
+                        df_trends,
+                        x='Topic',
+                        y='Interest',
+                        title='Google Trends: Political Topics',
+                        color='Interest',
+                        color_continuous_scale='Blues'
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+
+            st.markdown("---")
+
+            # Market Data Section
+            st.markdown("### 📊 Market Data")
+
+            sp500_value = context.get('sp500_value')
+            dow_value = context.get('dow_value')
+            market_sentiment = context.get('market_sentiment', 'neutral')
+
+            if sp500_value or dow_value:
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    if sp500_value:
+                        sp_change = context.get('sp500_change_pct', 0)
+                        st.metric(
+                            "S&P 500",
+                            f"${sp500_value:,.2f}",
+                            f"{sp_change:+.2f}%",
+                            delta_color="normal"
+                        )
+
+                with col2:
+                    if dow_value:
+                        dow_change = context.get('dow_change_pct', 0)
+                        st.metric(
+                            "Dow Jones",
+                            f"${dow_value:,.2f}",
+                            f"{dow_change:+.2f}%",
+                            delta_color="normal"
+                        )
+
+                with col3:
+                    sentiment_emoji = {
+                        'bullish': '📈',
+                        'bearish': '📉',
+                        'neutral': '➡️'
+                    }
+                    st.metric(
+                        "Market Sentiment",
+                        f"{sentiment_emoji.get(market_sentiment, '➡️')} {market_sentiment.capitalize()}"
+                    )
+            else:
+                st.info("Market data not available")
+
+            st.markdown("---")
+
+            # Data Sources & Errors
+            st.markdown("### 🔍 Metadata")
+
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("**Data Sources Used:**")
+                data_sources = context.get('data_sources', [])
+                if data_sources:
+                    for source in data_sources:
+                        st.markdown(f"- ✅ {source}")
+                else:
+                    st.markdown("- ⚠️ No data sources available")
+
+            with col2:
+                st.markdown("**Fetch Errors:**")
+                fetch_errors = context.get('fetch_errors', [])
+                if fetch_errors:
+                    for error in fetch_errors:
+                        st.markdown(f"- ❌ {error['source']}: {error['error'][:50]}...")
+                else:
+                    st.markdown("- ✅ No errors")
+
+            # Context History
+            st.markdown("---")
+            st.markdown("### 📜 Context History")
+
+            session = get_session()
+            snapshots = session.query(ContextSnapshot)\
+                .order_by(ContextSnapshot.captured_at.desc())\
+                .limit(10)\
+                .all()
+            session.close()
+
+            if snapshots:
+                history_data = []
+                for snapshot in snapshots:
+                    history_data.append({
+                        'Time': snapshot.captured_at.strftime('%Y-%m-%d %H:%M'),
+                        'Completeness': f"{snapshot.completeness_score:.0%}" if snapshot.completeness_score else 'N/A',
+                        'Freshness': f"{snapshot.freshness_score:.0%}" if snapshot.freshness_score else 'N/A',
+                        'Market': snapshot.market_sentiment or 'N/A',
+                        'S&P Change': f"{snapshot.sp500_change_pct:+.2f}%" if snapshot.sp500_change_pct else 'N/A',
+                        'Used in': snapshot.used_in_predictions or 0
+                    })
+
+                df_history = pd.DataFrame(history_data)
+                st.dataframe(df_history, use_container_width=True, hide_index=True)
+            else:
+                st.info("No context history available yet")
+
+        except Exception as e:
+            st.error(f"Error fetching context: {str(e)}")
+            st.info("Make sure API keys are set: NEWS_API_KEY (optional)")
 
 
 # ============================================================================
