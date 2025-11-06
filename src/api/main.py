@@ -36,6 +36,7 @@ load_dotenv()
 from src.predictor import TrumpPostPredictor
 from src.data.database import get_session, Prediction, Post, ModelVersion, TrainingRun, ModelEvaluation
 from src.models.model_registry import ModelRegistry
+from src.validation.validator import PredictionValidator
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -63,6 +64,9 @@ scheduler: Optional[BackgroundScheduler] = None
 
 # Global model registry instance
 model_registry = ModelRegistry()
+
+# Global validation instance
+validator = PredictionValidator()
 
 # Prediction job lock (prevents overlapping predictions)
 prediction_job_lock = threading.Lock()
@@ -966,6 +970,157 @@ async def compare_models(version_a: str, version_b: str):
         raise HTTPException(
             status_code=500,
             detail=f"Failed to compare models: {str(e)}"
+        )
+
+
+# ============================================================================
+# Validation Endpoints
+# ============================================================================
+
+@app.get("/validation/stats", tags=["Validation"])
+async def get_validation_stats():
+    """
+    Get overall validation statistics.
+
+    Returns aggregate metrics for all validated predictions.
+    """
+
+    try:
+        stats = validator.get_validation_stats()
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error fetching validation stats: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch validation stats: {str(e)}"
+        )
+
+
+@app.post("/validation/validate", tags=["Validation"])
+async def trigger_validation(background_tasks: BackgroundTasks):
+    """
+    Manually trigger validation of unvalidated predictions.
+
+    This will find all predictions whose predicted time has passed,
+    match them to actual posts, and calculate accuracy metrics.
+
+    Note: This is a background task that may take a few seconds.
+    """
+
+    try:
+        import subprocess
+
+        logger.info("Triggering manual validation via API...")
+
+        # Run validation script in background
+        def run_validation():
+            try:
+                result = subprocess.run(
+                    [sys.executable, "scripts/validate_predictions.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minute timeout
+                )
+                logger.info(f"Validation completed with code {result.returncode}")
+                if result.stdout:
+                    logger.info(f"Output: {result.stdout}")
+                if result.stderr:
+                    logger.error(f"Errors: {result.stderr}")
+            except Exception as e:
+                logger.error(f"Validation failed: {e}")
+
+        background_tasks.add_task(run_validation)
+
+        return {
+            "status": "started",
+            "message": "Validation started in background",
+            "note": "Check /validation/stats for updated statistics"
+        }
+
+    except Exception as e:
+        logger.error(f"Error triggering validation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to trigger validation: {str(e)}"
+        )
+
+
+@app.get("/validation/timeline", tags=["Validation"])
+async def get_validation_timeline(days_back: int = 30):
+    """
+    Get timeline data for visualization.
+
+    Parameters:
+    - days_back: Number of days to look back (default: 30, max: 90)
+
+    Returns:
+    - actual_posts: List of actual posts
+    - predictions: List of predictions
+    - Matched pairs indicated by linked IDs
+    """
+
+    if days_back > 90:
+        days_back = 90
+
+    try:
+        timeline_data = validator.get_timeline_data(days_back=days_back)
+
+        return {
+            "actual_posts": timeline_data['actual_posts'],
+            "predictions": timeline_data['predictions'],
+            "date_range": {
+                "start": timeline_data['date_range']['start'],
+                "end": timeline_data['date_range']['end']
+            },
+            "summary": {
+                "total_actual": len(timeline_data['actual_posts']),
+                "total_predicted": len(timeline_data['predictions']),
+                "matched": sum(1 for p in timeline_data['predictions'] if p['actual_post_id'])
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching timeline data: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch timeline data: {str(e)}"
+        )
+
+
+@app.get("/validation/unvalidated", tags=["Validation"])
+async def get_unvalidated_predictions():
+    """
+    Get list of predictions that haven't been validated yet.
+
+    Returns predictions whose predicted time has passed but haven't
+    been matched to actual posts.
+    """
+
+    try:
+        unvalidated = validator.find_unvalidated_predictions()
+
+        results = []
+        for pred in unvalidated:
+            results.append({
+                "prediction_id": pred.prediction_id,
+                "predicted_at": pred.predicted_at,
+                "predicted_time": pred.predicted_time,
+                "predicted_content": pred.predicted_content[:100] + '...',
+                "timing_confidence": pred.predicted_time_confidence,
+                "content_confidence": pred.predicted_content_confidence
+            })
+
+        return {
+            "unvalidated_predictions": results,
+            "count": len(results)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching unvalidated predictions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch unvalidated predictions: {str(e)}"
         )
 
 

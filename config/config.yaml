@@ -116,6 +116,13 @@ retraining:
     enabled: true  # Enable content model retraining
     update_examples: true  # Refresh example posts from latest data
 
+# Prediction Validation
+validation:
+  enabled: true  # Enable automatic validation
+  matching_window_hours: 24  # Time window for matching predictions to posts
+  timing_threshold_hours: 6  # Within 6h = correct timing
+  content_threshold: 0.3  # Minimum similarity for correct content
+
 # Dashboard
 dashboard:
   title: "Trump Post Predictor"

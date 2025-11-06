@@ -32,6 +32,7 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from src.predictor import TrumpPostPredictor
 from src.data.database import get_session, Post, Prediction
+from src.validation.validator import PredictionValidator
 
 
 # ============================================================================
@@ -76,6 +77,41 @@ st.markdown("""
         margin: 10px 0;
         background-color: #f8f9fa;
         border-radius: 5px;
+    }
+    .timeline-actual {
+        background-color: #2ecc71;
+        color: white;
+        padding: 10px;
+        border-radius: 8px;
+        margin: 5px 0;
+        cursor: pointer;
+        transition: all 0.3s;
+    }
+    .timeline-predicted {
+        background-color: #3498db;
+        color: white;
+        padding: 10px;
+        border-radius: 8px;
+        margin: 5px 0;
+        cursor: pointer;
+        transition: all 0.3s;
+    }
+    .timeline-matched {
+        background-color: #27ae60;
+        border: 3px solid #2ecc71;
+    }
+    .timeline-unmatched {
+        background-color: #e74c3c;
+        border: 3px solid #c0392b;
+    }
+    .timeline-correct {
+        box-shadow: 0 0 15px #2ecc71;
+    }
+    .post-content-preview {
+        font-size: 14px;
+        font-style: italic;
+        margin-top: 5px;
+        opacity: 0.9;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -194,7 +230,7 @@ st.sidebar.markdown("---")
 # Navigation
 page = st.sidebar.radio(
     "Navigate",
-    ["🎯 Make Prediction", "📊 Dashboard", "📝 Recent Posts", "⚙️ About"]
+    ["🎯 Make Prediction", "📊 Dashboard", "🎯 Validation Timeline", "📝 Recent Posts", "⚙️ About"]
 )
 
 st.sidebar.markdown("---")
@@ -366,6 +402,231 @@ elif page == "📊 Dashboard":
             use_container_width=True,
             hide_index=True
         )
+
+
+# ============================================================================
+# Page: Validation Timeline
+# ============================================================================
+
+elif page == "🎯 Validation Timeline":
+    st.title("🎯 Prediction Validation Timeline")
+    st.markdown("Compare predicted vs actual posts side-by-side with accurate timestamps.")
+
+    # Load validation data
+    validator = PredictionValidator()
+
+    # Get validation stats
+    stats = validator.get_validation_stats()
+
+    if stats.get('total_validated', 0) > 0:
+        # Display stats at top
+        st.markdown("### 📊 Overall Statistics")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Validated", stats['total_validated'])
+        col2.metric("Overall Accuracy", f"{stats['overall_accuracy']:.1%}")
+        col3.metric("Timing MAE", f"{stats['timing_mae_hours']:.1f}h")
+        col4.metric("Within 6h", f"{stats['within_6h_accuracy']:.1%}")
+
+        st.markdown("---")
+
+    # Time range selector
+    st.markdown("### 📅 Timeline View")
+    days_back = st.slider("Days to show", min_value=7, max_value=90, value=30, step=7)
+
+    # Get timeline data
+    with st.spinner("Loading timeline data..."):
+        timeline_data = validator.get_timeline_data(days_back=days_back)
+
+    actual_posts = timeline_data['actual_posts']
+    predictions = timeline_data['predictions']
+
+    if not actual_posts and not predictions:
+        st.warning(f"No data found for the last {days_back} days")
+        st.info("Make some predictions and wait for actual posts to compare!")
+    else:
+        # Create dual timeline visualization using Plotly
+        st.markdown("### 🕐 Dual Timeline: Actual vs Predicted")
+
+        # Prepare data for Plotly timeline
+        fig = go.Figure()
+
+        # Add actual posts (top timeline)
+        for post in actual_posts:
+            is_matched = post['matched_prediction_id'] is not None
+            color = '#2ecc71' if is_matched else '#95a5a6'
+            hover_text = f"<b>Actual Post</b><br>Time: {post['time']}<br>Content: {post['content'][:100]}..."
+            if is_matched:
+                hover_text += "<br>✓ Matched to prediction"
+
+            fig.add_trace(go.Scatter(
+                x=[post['time']],
+                y=[1],
+                mode='markers',
+                marker=dict(
+                    size=15,
+                    color=color,
+                    symbol='circle',
+                    line=dict(width=2, color='white')
+                ),
+                name='Actual',
+                text=post['content'][:50] + '...',
+                hovertext=hover_text,
+                hoverinfo='text',
+                showlegend=False
+            ))
+
+        # Add predictions (bottom timeline)
+        for pred in predictions:
+            if pred['was_correct']:
+                color = '#27ae60'  # Green for correct
+                symbol = 'star'
+            elif pred['actual_post_id']:
+                color = '#f39c12'  # Orange for matched but not correct
+                symbol = 'diamond'
+            else:
+                color = '#e74c3c'  # Red for unmatched
+                symbol = 'x'
+
+            hover_text = f"<b>Predicted Post</b><br>Predicted Time: {pred['time']}<br>Content: {pred['content'][:100]}..."
+            if pred['actual_post_id']:
+                hover_text += f"<br>Actual Time: {pred['actual_time']}<br>Error: {pred['timing_error_hours']:.1f}h"
+                hover_text += f"<br>Similarity: {pred['similarity']:.3f}" if pred['similarity'] else ""
+                hover_text += "<br>✓ Correct!" if pred['was_correct'] else "<br>✗ Not correct"
+            else:
+                hover_text += "<br>⏳ Not yet matched"
+
+            fig.add_trace(go.Scatter(
+                x=[pred['time']],
+                y=[0],
+                mode='markers',
+                marker=dict(
+                    size=15,
+                    color=color,
+                    symbol=symbol,
+                    line=dict(width=2, color='white')
+                ),
+                name='Predicted',
+                text=pred['content'][:50] + '...',
+                hovertext=hover_text,
+                hoverinfo='text',
+                showlegend=False
+            ))
+
+        # Add connecting lines for matched pairs
+        for pred in predictions:
+            if pred['actual_post_id']:
+                # Find the corresponding actual post
+                actual_post = next((p for p in actual_posts if p['id'] == pred['actual_post_id']), None)
+                if actual_post:
+                    # Draw line connecting prediction to actual
+                    fig.add_trace(go.Scatter(
+                        x=[pred['time'], actual_post['time']],
+                        y=[0, 1],
+                        mode='lines',
+                        line=dict(
+                            color='rgba(52, 152, 219, 0.3)',
+                            width=2,
+                            dash='dot'
+                        ),
+                        hoverinfo='skip',
+                        showlegend=False
+                    ))
+
+        # Update layout
+        fig.update_layout(
+            height=400,
+            xaxis=dict(
+                title="Time",
+                showgrid=True,
+                gridcolor='lightgray'
+            ),
+            yaxis=dict(
+                title="",
+                ticktext=['Predicted', 'Actual'],
+                tickvals=[0, 1],
+                range=[-0.3, 1.3],
+                showgrid=False
+            ),
+            plot_bgcolor='white',
+            hovermode='closest',
+            margin=dict(l=100, r=50, t=50, b=50)
+        )
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Legend
+        st.markdown("""
+        **Legend:**
+        - 🟢 Green circles (top) = Actual posts (matched to prediction)
+        - ⚪ Gray circles (top) = Actual posts (no prediction)
+        - ⭐ Green stars (bottom) = Correct predictions
+        - 🔶 Orange diamonds (bottom) = Matched but not fully correct
+        - ❌ Red X (bottom) = Unmatched predictions
+        - Dotted lines connect matched prediction-actual pairs
+        """)
+
+        st.markdown("---")
+
+        # Detailed comparison table
+        st.markdown("### 📋 Detailed Comparisons")
+
+        # Filter to show only matched predictions
+        matched_predictions = [p for p in predictions if p['actual_post_id']]
+
+        if matched_predictions:
+            comparison_data = []
+            for pred in matched_predictions:
+                actual_post = next((p for p in actual_posts if p['id'] == pred['actual_post_id']), None)
+                if actual_post:
+                    comparison_data.append({
+                        'Predicted Time': pred['time'],
+                        'Actual Time': actual_post['time'],
+                        'Error (hours)': f"{pred['timing_error_hours']:.1f}h" if pred['timing_error_hours'] else 'N/A',
+                        'Similarity': f"{pred['similarity']:.3f}" if pred['similarity'] else 'N/A',
+                        'Correct': '✓' if pred['was_correct'] else '✗',
+                        'Predicted Content': pred['content'][:80] + '...',
+                        'Actual Content': actual_post['content'][:80] + '...'
+                    })
+
+            if comparison_data:
+                df = pd.DataFrame(comparison_data)
+                st.dataframe(df, use_container_width=True, hide_index=True)
+        else:
+            st.info("No matched predictions yet. Predictions will be matched to actual posts automatically.")
+
+        # Individual post comparisons (expandable)
+        st.markdown("### 🔍 Side-by-Side Comparison")
+        if matched_predictions:
+            for pred in matched_predictions[:10]:  # Show first 10
+                actual_post = next((p for p in actual_posts if p['id'] == pred['actual_post_id']), None)
+                if actual_post:
+                    with st.expander(
+                        f"{'✓' if pred['was_correct'] else '✗'} Prediction at {pred['time'].strftime('%Y-%m-%d %H:%M')} "
+                        f"(Error: {pred['timing_error_hours']:.1f}h)"
+                    ):
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            st.markdown("**🔮 Predicted**")
+                            st.markdown(f"**Time:** {pred['time'].strftime('%Y-%m-%d %H:%M:%S')}")
+                            st.markdown(f"**Confidence:** Timing: {pred['timing_confidence']:.1%}, Content: {pred['content_confidence']:.1%}")
+                            st.markdown("**Content:**")
+                            st.info(pred['content'])
+
+                        with col2:
+                            st.markdown("**✅ Actual**")
+                            st.markdown(f"**Time:** {actual_post['time'].strftime('%Y-%m-%d %H:%M:%S')}")
+                            st.markdown(f"**Similarity:** {pred['similarity']:.3f}" if pred['similarity'] else "N/A")
+                            st.markdown("**Content:**")
+                            st.success(actual_post['content'])
+
+                        # Metrics
+                        metric_col1, metric_col2, metric_col3 = st.columns(3)
+                        metric_col1.metric("Timing Error", f"{pred['timing_error_hours']:.1f}h")
+                        metric_col2.metric("Content Similarity", f"{pred['similarity']:.3f}" if pred['similarity'] else "N/A")
+                        metric_col3.metric("Result", "✓ Correct" if pred['was_correct'] else "✗ Incorrect")
+        else:
+            st.info("Make some predictions and wait for posts to see detailed comparisons!")
 
 
 # ============================================================================
