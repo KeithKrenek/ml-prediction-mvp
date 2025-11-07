@@ -371,7 +371,7 @@ class RealTimeContextGatherer:
             self.data_sources_used.append('google_trends')
 
         except Exception as e:
-            logger.error(f"Failed to fetch trending topics: {e}")
+            logger.warning(f"Failed to fetch trending topics (this is expected if Google is blocking requests): {e}")
             self.fetch_errors.append({'source': 'google_trends', 'error': str(e)})
 
         # Cache the result
@@ -431,7 +431,19 @@ class RealTimeContextGatherer:
                 market_data['dow_change_pct'] = float(change_pct)
 
             # Determine market sentiment
-            avg_change = (market_data['sp500_change_pct'] + market_data['dow_change_pct']) / 2
+            # Handle None values from failed API calls
+            sp500_change = market_data['sp500_change_pct']
+            dow_change = market_data['dow_change_pct']
+
+            if sp500_change is not None and dow_change is not None:
+                avg_change = (sp500_change + dow_change) / 2
+            elif sp500_change is not None:
+                avg_change = sp500_change
+            elif dow_change is not None:
+                avg_change = dow_change
+            else:
+                avg_change = 0.0  # No data available, default to neutral
+
             if avg_change > 1.0:
                 market_data['market_sentiment'] = 'bullish'
             elif avg_change < -1.0:
@@ -440,7 +452,14 @@ class RealTimeContextGatherer:
                 market_data['market_sentiment'] = 'neutral'
 
             self.data_sources_used.append('yfinance')
-            logger.info(f"Fetched market data: S&P {market_data['sp500_change_pct']:.2f}%, Dow {market_data['dow_change_pct']:.2f}%")
+
+            # Only log success if we got at least one data point
+            if sp500_change is not None or dow_change is not None:
+                s_and_p = f"S&P {sp500_change:.2f}%" if sp500_change is not None else "S&P N/A"
+                dow_str = f"Dow {dow_change:.2f}%" if dow_change is not None else "Dow N/A"
+                logger.info(f"Fetched market data: {s_and_p}, {dow_str}")
+            else:
+                logger.warning("Market data fetch returned no values (API may be unavailable)")
 
         except Exception as e:
             logger.error(f"Failed to fetch market data: {e}")
