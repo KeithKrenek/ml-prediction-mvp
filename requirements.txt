@@ -8,7 +8,7 @@ prophet==1.1.5
 torch==2.1.2  # For Neural Temporal Point Process (NTPP)
 
 # Content Model
-anthropic==0.18.1
+anthropic==0.39.0
 
 # API & Web
 fastapi==0.109.0
