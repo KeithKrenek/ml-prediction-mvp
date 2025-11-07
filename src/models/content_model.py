@@ -14,6 +14,7 @@ from anthropic import Anthropic
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.database import get_session, Post
+from context.context_gatherer import RealTimeContextGatherer
 
 
 class ContentGenerator:
@@ -123,24 +124,46 @@ class ContentGenerator:
         time_context = ""
         if predicted_time:
             time_context = f"Time context: {predicted_time.strftime('%A, %B %d, %Y at %I:%M %p')}"
-        
+
+        # Enhanced context from RealTimeContextGatherer
         news_context = ""
-        if context and 'recent_news' in context:
-            news_context = f"Recent news: {context['recent_news']}"
-        
-        # Build few-shot prompt
+        trending_context = ""
+        market_context = ""
+
+        if context:
+            # News headlines
+            if 'news_summary' in context and context['news_summary']:
+                news_context = f"Recent news: {context['news_summary']}"
+            elif 'recent_news' in context:
+                # Fallback to old format
+                news_context = f"Recent news: {context['recent_news']}"
+
+            # Trending topics
+            if 'trending_keywords' in context and context['trending_keywords']:
+                top_trends = ', '.join(context['trending_keywords'][:5])
+                trending_context = f"Trending topics: {top_trends}"
+
+            # Market data
+            if 'market_sentiment' in context:
+                sentiment = context['market_sentiment']
+                sp_change = context.get('sp500_change_pct', 0)
+                market_context = f"Market: {sentiment} (S&P {sp_change:+.1f}%)"
+
+        # Build few-shot prompt with enhanced context
         examples = self.format_examples()
-        
+
+        context_section = "\n".join(filter(None, [time_context, news_context, trending_context, market_context]))
+
         prompt = f"""You are generating a social media post in the style of Donald Trump's Truth Social posts.
 
 Below are real examples of his posting style:
 
 {examples}
 
-{time_context}
-{news_context}
+Current context:
+{context_section}
 
-Now generate a new post in the same style. Keep it under 280 characters. Make it authentic to the style - direct, capitalized words for emphasis, and characteristic phrasing. Do not include quotes around the post.
+Now generate a new post in the same style. Keep it under 280 characters. Make it authentic to the style - direct, capitalized words for emphasis, and characteristic phrasing. The post should be relevant to the current context. Do not include quotes around the post.
 
 Generated post:"""
 
@@ -235,36 +258,8 @@ Generated post:"""
         return metrics
 
 
-class ContextGatherer:
-    """
-    Gather context information for content generation.
-    
-    For MVP: Simple placeholder. Later: integrate NewsAPI, trending topics, etc.
-    """
-    
-    def __init__(self):
-        self.news_api_key = os.getenv('NEWS_API_KEY')
-    
-    def get_recent_news(self, topics=None):
-        """
-        Get recent news headlines.
-        
-        For MVP: Returns placeholder. Later: integrate NewsAPI.
-        """
-        # Placeholder for MVP
-        return "Recent political developments and economic indicators."
-    
-    def get_trending_topics(self):
-        """Get trending topics (placeholder for MVP)"""
-        return ["economy", "politics", "election"]
-    
-    def get_full_context(self):
-        """Get all context information"""
-        return {
-            'recent_news': self.get_recent_news(),
-            'trending_topics': self.get_trending_topics(),
-            'gathered_at': datetime.now()
-        }
+# Alias for backward compatibility
+ContextGatherer = RealTimeContextGatherer
 
 
 def main():

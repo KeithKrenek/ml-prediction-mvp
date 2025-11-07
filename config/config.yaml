@@ -87,6 +87,72 @@ scheduling:
   retry_on_failure: true
   retry_delay_minutes: 30
 
+# Automated Model Retraining
+retraining:
+  enabled: true  # Enable automatic model retraining
+  schedule_days: 7  # Retrain every N days (default: weekly)
+
+  # Data split configuration
+  test_split: 0.2  # Fraction of data for test set (0.2 = 20%)
+  min_training_samples: 50  # Minimum samples required to train
+
+  # Evaluation configuration
+  evaluation_max_predictions: 20  # Max predictions to make during evaluation
+
+  # Auto-promotion settings
+  auto_promote: true  # Automatically promote better models
+  min_improvement_threshold: 2.0  # Minimum % improvement to auto-promote (2% = 2.0)
+
+  # Version management
+  keep_versions: 10  # Keep N most recent versions per model type
+  archive_old_versions: true  # Archive old versions to save space
+
+  # Model-specific settings
+  timing_model:
+    enabled: true  # Enable timing model retraining
+    evaluation_window_hours: 48  # Hours ahead to forecast during eval
+
+  content_model:
+    enabled: true  # Enable content model retraining
+    update_examples: true  # Refresh example posts from latest data
+
+# Prediction Validation
+validation:
+  enabled: true  # Enable automatic validation
+  matching_window_hours: 24  # Time window for matching predictions to posts
+  timing_threshold_hours: 6  # Within 6h = correct timing
+  content_threshold: 0.3  # Minimum similarity for correct content
+
+# Real-time Context Integration
+context_integration:
+  enabled: true  # Enable context fetching
+  cache_ttl_minutes: 30  # Cache context for 30 minutes to avoid API limits
+  save_to_database: true  # Save context snapshots to database
+
+  # News API (NewsAPI.org)
+  news_api_enabled: true
+  news_max_articles: 10
+
+  # Google Trends
+  trends_enabled: true
+  trends_num_topics: 10
+
+  # Stock Market Data (yfinance)
+  market_data_enabled: true
+
+  # RSS Feeds (fallback for news)
+  rss_feeds_enabled: true
+  rss_feeds:
+    - https://rss.nytimes.com/services/xml/rss/nyt/Politics.xml
+    - https://feeds.washingtonpost.com/rss/politics
+    - https://www.politico.com/rss/politicopicks.xml
+
+  # Future: Social media trends
+  twitter_trends_enabled: false  # Requires Twitter API (not implemented yet)
+
+  # Future: Political events calendar
+  events_calendar_enabled: false  # Not implemented yet
+
 # Dashboard
 dashboard:
   title: "Trump Post Predictor"

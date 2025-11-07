@@ -34,7 +34,10 @@ load_dotenv()
 
 # Import prediction system
 from src.predictor import TrumpPostPredictor
-from src.data.database import get_session, Prediction, Post
+from src.data.database import get_session, Prediction, Post, ModelVersion, TrainingRun, ModelEvaluation, ContextSnapshot
+from src.models.model_registry import ModelRegistry
+from src.validation.validator import PredictionValidator
+from src.context.context_gatherer import RealTimeContextGatherer
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -59,6 +62,15 @@ predictor: Optional[TrumpPostPredictor] = None
 
 # Global scheduler instance
 scheduler: Optional[BackgroundScheduler] = None
+
+# Global model registry instance
+model_registry = ModelRegistry()
+
+# Global validation instance
+validator = PredictionValidator()
+
+# Global context gatherer instance
+context_gatherer = RealTimeContextGatherer()
 
 # Prediction job lock (prevents overlapping predictions)
 prediction_job_lock = threading.Lock()
@@ -703,6 +715,583 @@ async def trigger_scheduled_prediction():
         raise HTTPException(
             status_code=500,
             detail=f"Failed to trigger prediction: {str(e)}"
+        )
+
+
+# ============================================================================
+# Model Management Endpoints
+# ============================================================================
+
+@app.get("/models/versions", tags=["Models"])
+async def get_model_versions(
+    model_type: Optional[str] = None,
+    limit: int = 20
+):
+    """
+    Get all model versions.
+
+    Parameters:
+    - model_type: Filter by type ('timing' or 'content')
+    - limit: Maximum number of versions to return (default: 20, max: 100)
+    """
+
+    if limit > 100:
+        limit = 100
+
+    try:
+        versions = model_registry.get_all_versions(model_type=model_type, limit=limit)
+
+        results = []
+        for v in versions:
+            results.append({
+                "version_id": v.version_id,
+                "model_type": v.model_type,
+                "algorithm": v.algorithm,
+                "trained_at": v.trained_at,
+                "status": v.status,
+                "is_production": v.is_production,
+                "promoted_at": v.promoted_at,
+                "num_training_samples": v.num_training_samples,
+                "training_duration_seconds": v.training_duration_seconds,
+                "file_size_bytes": v.file_size_bytes,
+                "notes": v.notes
+            })
+
+        return {
+            "versions": results,
+            "count": len(results),
+            "model_type_filter": model_type
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching model versions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch model versions: {str(e)}"
+        )
+
+
+@app.get("/models/production", tags=["Models"])
+async def get_production_models():
+    """Get current production models for timing and content."""
+
+    try:
+        timing_model = model_registry.get_production_model('timing')
+        content_model = model_registry.get_production_model('content')
+
+        return {
+            "timing_model": {
+                "version_id": timing_model.version_id if timing_model else None,
+                "algorithm": timing_model.algorithm if timing_model else None,
+                "trained_at": timing_model.trained_at if timing_model else None,
+                "promoted_at": timing_model.promoted_at if timing_model else None,
+                "num_training_samples": timing_model.num_training_samples if timing_model else None
+            } if timing_model else None,
+            "content_model": {
+                "version_id": content_model.version_id if content_model else None,
+                "algorithm": content_model.algorithm if content_model else None,
+                "trained_at": content_model.trained_at if content_model else None,
+                "promoted_at": content_model.promoted_at if content_model else None,
+                "num_training_samples": content_model.num_training_samples if content_model else None
+            } if content_model else None
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching production models: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch production models: {str(e)}"
+        )
+
+
+@app.get("/models/training-history", tags=["Models"])
+async def get_training_history(limit: int = 10):
+    """
+    Get recent training runs.
+
+    Parameters:
+    - limit: Number of runs to return (default: 10, max: 50)
+    """
+
+    if limit > 50:
+        limit = 50
+
+    try:
+        runs = model_registry.get_training_history(limit=limit)
+
+        results = []
+        for run in runs:
+            results.append({
+                "run_id": run.run_id,
+                "model_version_id": run.model_version_id,
+                "started_at": run.started_at,
+                "completed_at": run.completed_at,
+                "duration_seconds": run.duration_seconds,
+                "status": run.status,
+                "num_training_samples": run.num_training_samples,
+                "test_mae_hours": run.test_mae_hours,
+                "test_within_6h_accuracy": run.test_within_6h_accuracy,
+                "promoted_to_production": run.promoted_to_production,
+                "promotion_reason": run.promotion_reason,
+                "error_message": run.error_message
+            })
+
+        return {
+            "training_runs": results,
+            "count": len(results)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching training history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch training history: {str(e)}"
+        )
+
+
+@app.post("/models/promote/{version_id}", tags=["Models"])
+async def promote_model(version_id: str):
+    """
+    Manually promote a model version to production.
+
+    This will demote the current production model and promote
+    the specified version.
+    """
+
+    try:
+        success = model_registry.promote_to_production(
+            version_id=version_id,
+            reason="Manual promotion via API"
+        )
+
+        if success:
+            return {
+                "status": "success",
+                "message": f"Model {version_id} promoted to production",
+                "version_id": version_id
+            }
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to promote model {version_id}"
+            )
+
+    except Exception as e:
+        logger.error(f"Error promoting model: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to promote model: {str(e)}"
+        )
+
+
+@app.post("/models/retrain", tags=["Models"])
+async def trigger_retraining(background_tasks: BackgroundTasks):
+    """
+    Manually trigger model retraining.
+
+    This will start a background task to retrain both timing
+    and content models with the latest data.
+
+    Note: This is a long-running operation (5-10 minutes).
+    Check /models/training-history for progress.
+    """
+
+    try:
+        # Import here to avoid circular dependency
+        import subprocess
+
+        logger.info("Triggering manual model retraining via API...")
+
+        # Run retraining script in background
+        def run_retraining():
+            try:
+                result = subprocess.run(
+                    [sys.executable, "scripts/retrain_models.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=600  # 10 minute timeout
+                )
+                logger.info(f"Retraining completed with code {result.returncode}")
+                if result.stdout:
+                    logger.info(f"Output: {result.stdout}")
+                if result.stderr:
+                    logger.error(f"Errors: {result.stderr}")
+            except Exception as e:
+                logger.error(f"Retraining failed: {e}")
+
+        background_tasks.add_task(run_retraining)
+
+        return {
+            "status": "started",
+            "message": "Model retraining started in background",
+            "note": "Check /models/training-history for progress"
+        }
+
+    except Exception as e:
+        logger.error(f"Error triggering retraining: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to trigger retraining: {str(e)}"
+        )
+
+
+@app.get("/models/compare/{version_a}/{version_b}", tags=["Models"])
+async def compare_models(version_a: str, version_b: str):
+    """
+    Compare two model versions based on their evaluations.
+
+    Returns detailed comparison and recommendation.
+    """
+
+    try:
+        comparison = model_registry.compare_models(version_a, version_b)
+
+        if comparison['comparison'] == 'incomplete':
+            raise HTTPException(
+                status_code=400,
+                detail=comparison['reason']
+            )
+
+        return {
+            "version_a": {
+                "version_id": version_a,
+                "score": comparison['model_a']['score']
+            },
+            "version_b": {
+                "version_id": version_b,
+                "score": comparison['model_b']['score']
+            },
+            "winner": comparison['winner'],
+            "improvement_percentage": comparison['improvement_percentage'],
+            "recommendation": comparison['recommendation'],
+            "reason": comparison['reason']
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error comparing models: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to compare models: {str(e)}"
+        )
+
+
+# ============================================================================
+# Validation Endpoints
+# ============================================================================
+
+@app.get("/validation/stats", tags=["Validation"])
+async def get_validation_stats():
+    """
+    Get overall validation statistics.
+
+    Returns aggregate metrics for all validated predictions.
+    """
+
+    try:
+        stats = validator.get_validation_stats()
+        return stats
+
+    except Exception as e:
+        logger.error(f"Error fetching validation stats: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch validation stats: {str(e)}"
+        )
+
+
+@app.post("/validation/validate", tags=["Validation"])
+async def trigger_validation(background_tasks: BackgroundTasks):
+    """
+    Manually trigger validation of unvalidated predictions.
+
+    This will find all predictions whose predicted time has passed,
+    match them to actual posts, and calculate accuracy metrics.
+
+    Note: This is a background task that may take a few seconds.
+    """
+
+    try:
+        import subprocess
+
+        logger.info("Triggering manual validation via API...")
+
+        # Run validation script in background
+        def run_validation():
+            try:
+                result = subprocess.run(
+                    [sys.executable, "scripts/validate_predictions.py"],
+                    capture_output=True,
+                    text=True,
+                    timeout=300  # 5 minute timeout
+                )
+                logger.info(f"Validation completed with code {result.returncode}")
+                if result.stdout:
+                    logger.info(f"Output: {result.stdout}")
+                if result.stderr:
+                    logger.error(f"Errors: {result.stderr}")
+            except Exception as e:
+                logger.error(f"Validation failed: {e}")
+
+        background_tasks.add_task(run_validation)
+
+        return {
+            "status": "started",
+            "message": "Validation started in background",
+            "note": "Check /validation/stats for updated statistics"
+        }
+
+    except Exception as e:
+        logger.error(f"Error triggering validation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to trigger validation: {str(e)}"
+        )
+
+
+@app.get("/validation/timeline", tags=["Validation"])
+async def get_validation_timeline(days_back: int = 30):
+    """
+    Get timeline data for visualization.
+
+    Parameters:
+    - days_back: Number of days to look back (default: 30, max: 90)
+
+    Returns:
+    - actual_posts: List of actual posts
+    - predictions: List of predictions
+    - Matched pairs indicated by linked IDs
+    """
+
+    if days_back > 90:
+        days_back = 90
+
+    try:
+        timeline_data = validator.get_timeline_data(days_back=days_back)
+
+        return {
+            "actual_posts": timeline_data['actual_posts'],
+            "predictions": timeline_data['predictions'],
+            "date_range": {
+                "start": timeline_data['date_range']['start'],
+                "end": timeline_data['date_range']['end']
+            },
+            "summary": {
+                "total_actual": len(timeline_data['actual_posts']),
+                "total_predicted": len(timeline_data['predictions']),
+                "matched": sum(1 for p in timeline_data['predictions'] if p['actual_post_id'])
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching timeline data: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch timeline data: {str(e)}"
+        )
+
+
+@app.get("/validation/unvalidated", tags=["Validation"])
+async def get_unvalidated_predictions():
+    """
+    Get list of predictions that haven't been validated yet.
+
+    Returns predictions whose predicted time has passed but haven't
+    been matched to actual posts.
+    """
+
+    try:
+        unvalidated = validator.find_unvalidated_predictions()
+
+        results = []
+        for pred in unvalidated:
+            results.append({
+                "prediction_id": pred.prediction_id,
+                "predicted_at": pred.predicted_at,
+                "predicted_time": pred.predicted_time,
+                "predicted_content": pred.predicted_content[:100] + '...',
+                "timing_confidence": pred.predicted_time_confidence,
+                "content_confidence": pred.predicted_content_confidence
+            })
+
+        return {
+            "unvalidated_predictions": results,
+            "count": len(results)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching unvalidated predictions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch unvalidated predictions: {str(e)}"
+        )
+
+
+# ============================================================================
+# Context Endpoints
+# ============================================================================
+
+@app.get("/context/current", tags=["Context"])
+async def get_current_context():
+    """
+    Get current real-time context.
+
+    Fetches the latest context from all available sources including:
+    - News headlines (NewsAPI, RSS feeds)
+    - Trending topics (Google Trends)
+    - Stock market data (yfinance)
+
+    The context is cached for 30 minutes to avoid hitting API rate limits.
+    """
+
+    try:
+        context = context_gatherer.get_full_context(save_to_db=True)
+
+        # Format for API response
+        return {
+            "snapshot_id": context.get('snapshot_id'),
+            "captured_at": context.get('captured_at'),
+            "news": {
+                "top_headlines": context.get('top_headlines', [])[:5],  # Top 5 headlines
+                "political_news": context.get('political_news', [])[:3],  # Top 3 political
+                "summary": context.get('news_summary', '')
+            },
+            "trending": {
+                "keywords": context.get('trending_keywords', [])[:10],
+                "categories": context.get('trend_categories', {})
+            },
+            "market": {
+                "sp500": {
+                    "value": context.get('sp500_value'),
+                    "change_pct": context.get('sp500_change_pct')
+                },
+                "dow": {
+                    "value": context.get('dow_value'),
+                    "change_pct": context.get('dow_change_pct')
+                },
+                "sentiment": context.get('market_sentiment', 'neutral')
+            },
+            "metadata": {
+                "data_sources": context.get('data_sources', []),
+                "fetch_duration_seconds": context.get('fetch_duration_seconds'),
+                "completeness_score": context.get('completeness_score'),
+                "freshness_score": context.get('freshness_score'),
+                "errors": context.get('fetch_errors', [])
+            }
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching current context: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch context: {str(e)}"
+        )
+
+
+@app.get("/context/summary", tags=["Context"])
+async def get_context_summary():
+    """
+    Get a brief text summary of the current context.
+
+    Returns a human-readable summary that can be used for quick display.
+    """
+
+    try:
+        context = context_gatherer.get_full_context(save_to_db=False)
+        summary = context_gatherer.get_context_summary(context)
+
+        return {
+            "summary": summary,
+            "captured_at": context.get('captured_at')
+        }
+
+    except Exception as e:
+        logger.error(f"Error generating context summary: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate summary: {str(e)}"
+        )
+
+
+@app.get("/context/history", tags=["Context"])
+async def get_context_history(limit: int = 10):
+    """
+    Get historical context snapshots from the database.
+
+    Args:
+        limit: Maximum number of snapshots to return (default: 10)
+
+    Returns:
+        List of context snapshots ordered by most recent first
+    """
+
+    try:
+        session = get_session()
+
+        snapshots = session.query(ContextSnapshot)\
+            .order_by(ContextSnapshot.captured_at.desc())\
+            .limit(limit)\
+            .all()
+
+        results = []
+        for snapshot in snapshots:
+            results.append({
+                "snapshot_id": snapshot.snapshot_id,
+                "captured_at": snapshot.captured_at,
+                "news_summary": snapshot.news_summary,
+                "trending_keywords": snapshot.trending_keywords[:5] if snapshot.trending_keywords else [],
+                "market_sentiment": snapshot.market_sentiment,
+                "sp500_change_pct": snapshot.sp500_change_pct,
+                "completeness_score": snapshot.completeness_score,
+                "freshness_score": snapshot.freshness_score,
+                "used_in_predictions": snapshot.used_in_predictions
+            })
+
+        session.close()
+
+        return {
+            "snapshots": results,
+            "count": len(results)
+        }
+
+    except Exception as e:
+        logger.error(f"Error fetching context history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to fetch context history: {str(e)}"
+        )
+
+
+@app.post("/context/refresh", tags=["Context"])
+async def refresh_context():
+    """
+    Force refresh of context data (bypasses cache).
+
+    Use this to get the absolute latest data, but be mindful of API rate limits.
+    """
+
+    try:
+        # Clear cache to force refresh
+        context_gatherer.cache.clear()
+
+        # Fetch fresh context
+        context = context_gatherer.get_full_context(save_to_db=True)
+
+        return {
+            "status": "success",
+            "message": "Context refreshed successfully",
+            "snapshot_id": context.get('snapshot_id'),
+            "captured_at": context.get('captured_at'),
+            "completeness_score": context.get('completeness_score'),
+            "data_sources": context.get('data_sources', [])
+        }
+
+    except Exception as e:
+        logger.error(f"Error refreshing context: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to refresh context: {str(e)}"
         )
 
 

@@ -108,17 +108,191 @@ class ModelMetrics(Base):
 class DataCollectionLog(Base):
     """Log of data collection attempts"""
     __tablename__ = 'data_collection_log'
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     collected_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    
+
     source = Column(String)  # 'apify', 'scrapecreators', 'manual', etc.
     status = Column(String)  # 'success', 'failure', 'partial'
     num_posts_collected = Column(Integer)
     error_message = Column(Text)
-    
+
     def __repr__(self):
         return f"<Collection {self.source} at {self.collected_at}: {self.status}>"
+
+
+class ModelVersion(Base):
+    """Track all model versions and their metadata"""
+    __tablename__ = 'model_versions'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    version_id = Column(String, unique=True, index=True)  # e.g., "prophet_v1_20251106_120000"
+    model_type = Column(String, index=True)  # 'timing' or 'content'
+
+    # Training metadata
+    trained_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    training_duration_seconds = Column(Float)
+    training_data_start = Column(DateTime)
+    training_data_end = Column(DateTime)
+    num_training_samples = Column(Integer)
+
+    # Model file info
+    file_path = Column(String)  # Path to saved model file
+    file_size_bytes = Column(Integer)
+
+    # Model configuration
+    hyperparameters = Column(JSON)  # Model-specific config
+    algorithm = Column(String)  # 'prophet', 'neural_tpp', 'claude_api', etc.
+
+    # Status and promotion
+    status = Column(String, default='trained')  # 'trained', 'active', 'archived', 'failed'
+    is_production = Column(Boolean, default=False, index=True)  # Currently in production
+    promoted_at = Column(DateTime)
+
+    # Notes
+    notes = Column(Text)
+    created_by = Column(String, default='system')  # 'system', 'manual', 'cron'
+
+    def __repr__(self):
+        return f"<ModelVersion {self.version_id} ({self.status})>"
+
+
+class TrainingRun(Base):
+    """Track individual model training runs with detailed metrics"""
+    __tablename__ = 'training_runs'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(String, unique=True, index=True)
+    model_version_id = Column(String, index=True)  # Links to ModelVersion
+
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    completed_at = Column(DateTime)
+    duration_seconds = Column(Float)
+
+    # Training details
+    status = Column(String)  # 'running', 'completed', 'failed'
+    error_message = Column(Text)
+
+    # Data used
+    num_training_samples = Column(Integer)
+    num_validation_samples = Column(Integer)
+    training_data_start = Column(DateTime)
+    training_data_end = Column(DateTime)
+
+    # Training metrics (during training)
+    train_loss = Column(Float)
+    val_loss = Column(Float)
+
+    # Evaluation metrics (on test set)
+    test_mae_hours = Column(Float)  # For timing models
+    test_within_6h_accuracy = Column(Float)
+    test_within_24h_accuracy = Column(Float)
+    test_bertscore_f1 = Column(Float)  # For content models
+
+    # Comparison with previous model
+    previous_model_version_id = Column(String)
+    improvement_percentage = Column(Float)  # Positive = better, negative = worse
+
+    # Configuration snapshot
+    config_snapshot = Column(JSON)
+
+    # Auto-promotion decision
+    promoted_to_production = Column(Boolean, default=False)
+    promotion_reason = Column(Text)
+
+    def __repr__(self):
+        return f"<TrainingRun {self.run_id} ({self.status})>"
+
+
+class ModelEvaluation(Base):
+    """Store detailed evaluation results for model comparison"""
+    __tablename__ = 'model_evaluations'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    model_version_id = Column(String, index=True)
+    evaluated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    # Evaluation dataset info
+    eval_dataset_start = Column(DateTime)
+    eval_dataset_end = Column(DateTime)
+    num_samples = Column(Integer)
+
+    # Timing model metrics
+    mae_hours = Column(Float)
+    rmse_hours = Column(Float)
+    median_error_hours = Column(Float)
+    within_6h_accuracy = Column(Float)
+    within_12h_accuracy = Column(Float)
+    within_24h_accuracy = Column(Float)
+
+    # Content model metrics
+    bertscore_precision = Column(Float)
+    bertscore_recall = Column(Float)
+    bertscore_f1 = Column(Float)
+    bleu_score = Column(Float)
+    avg_length_similarity = Column(Float)
+
+    # Combined metrics
+    overall_score = Column(Float)  # Composite metric for comparison
+
+    # Detailed results
+    predictions_json = Column(JSON)  # Store individual predictions for analysis
+
+    def __repr__(self):
+        return f"<Evaluation {self.model_version_id} score={self.overall_score}>"
+
+
+class ContextSnapshot(Base):
+    """Store real-time context data for predictions"""
+    __tablename__ = 'context_snapshots'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id = Column(String, unique=True, index=True)
+    captured_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+    # News data
+    top_headlines = Column(JSON)  # List of recent news headlines
+    political_news = Column(JSON)  # Politics-specific news
+    news_summary = Column(Text)  # Brief summary of major news
+
+    # Trending topics
+    trending_topics = Column(JSON)  # Google Trends data
+    trending_keywords = Column(JSON)  # Top keywords
+    trend_categories = Column(JSON)  # Categorized trends
+
+    # Market data
+    sp500_value = Column(Float)  # S&P 500 current value
+    sp500_change_pct = Column(Float)  # Daily change %
+    dow_value = Column(Float)  # Dow Jones current value
+    dow_change_pct = Column(Float)  # Daily change %
+    market_sentiment = Column(String)  # 'bullish', 'bearish', 'neutral'
+
+    # Events and calendar
+    upcoming_events = Column(JSON)  # Political events, debates, etc.
+    recent_events = Column(JSON)  # Events from last 24h
+
+    # Social media context
+    twitter_trends = Column(JSON)  # Twitter/X trending topics (if available)
+    viral_topics = Column(JSON)  # Topics going viral
+
+    # Weather/external factors
+    major_weather_events = Column(JSON)  # Hurricanes, storms, etc.
+
+    # Metadata
+    data_sources = Column(JSON)  # Which APIs were used
+    fetch_duration_seconds = Column(Float)
+    fetch_errors = Column(JSON)  # Any errors during fetching
+
+    # Quality metrics
+    completeness_score = Column(Float)  # How complete is this context (0-1)
+    freshness_score = Column(Float)  # How recent is the data (0-1)
+
+    # Usage tracking
+    used_in_predictions = Column(Integer, default=0)  # How many predictions used this
+    prediction_ids = Column(JSON)  # List of prediction IDs using this context
+
+    def __repr__(self):
+        return f"<ContextSnapshot {self.snapshot_id} at {self.captured_at}>"
 
 
 # Database initialization functions
