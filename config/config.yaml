@@ -123,6 +123,23 @@ validation:
   timing_threshold_hours: 6  # Within 6h = correct timing
   content_threshold: 0.3  # Minimum similarity for correct content
 
+  # Enhanced Similarity Metrics Configuration
+  similarity_metrics:
+    # Enable/disable specific metrics
+    use_bertscore: true  # BERTScore (semantic token-level matching)
+    use_sentence_embeddings: true  # Sentence Transformers (document-level)
+    use_entity_matching: true  # Named Entity Recognition matching
+
+    # Metric weights (must sum to 1.0, will be normalized if not)
+    weights:
+      bertscore: 0.40  # 40% weight on BERTScore
+      sentence: 0.30   # 30% weight on sentence embeddings
+      entity: 0.20     # 20% weight on entity matching
+      lexical: 0.10    # 10% weight on traditional lexical metrics
+
+    # BERTScore model (options: roberta-large, microsoft/deberta-xlarge-mnli)
+    bertscore_model: "microsoft/deberta-xlarge-mnli"
+
 # Real-time Context Integration
 context_integration:
   enabled: true  # Enable context fetching

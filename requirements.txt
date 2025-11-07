@@ -41,5 +41,7 @@ apscheduler==3.10.4
 streamlit==1.30.0
 plotly==5.18.0
 
-# Evaluation
+# Evaluation & Similarity Metrics
 bert-score==0.3.13
+sentence-transformers==2.3.1
+spacy==3.7.2

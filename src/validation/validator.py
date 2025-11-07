@@ -22,6 +22,7 @@ from loguru import logger
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.database import get_session, Prediction, Post
+from src.validation.similarity_metrics import SimilarityMetrics
 
 
 class PredictionValidator:
@@ -29,14 +30,35 @@ class PredictionValidator:
     Validates predictions against actual posts and calculates accuracy metrics.
     """
 
-    def __init__(self, matching_window_hours: float = 24):
+    def __init__(
+        self,
+        matching_window_hours: float = 24,
+        similarity_weights: Optional[Dict[str, float]] = None,
+        use_bertscore: bool = True,
+        use_sentence_embeddings: bool = True,
+        use_entity_matching: bool = True
+    ):
         """
         Initialize validator.
 
         Args:
             matching_window_hours: Time window for matching predictions to posts (default: 24 hours)
+            similarity_weights: Dict with metric weights (bertscore, sentence, entity, lexical)
+            use_bertscore: Whether to use BERTScore (slower but more accurate)
+            use_sentence_embeddings: Whether to use sentence embeddings
+            use_entity_matching: Whether to use named entity matching
         """
         self.matching_window_hours = matching_window_hours
+
+        # Initialize similarity calculator with enhanced metrics
+        self.similarity_calculator = SimilarityMetrics(
+            weights=similarity_weights,
+            use_bertscore=use_bertscore,
+            use_sentence_embeddings=use_sentence_embeddings,
+            use_entity_matching=use_entity_matching
+        )
+
+        logger.info(f"PredictionValidator initialized with enhanced similarity metrics")
 
     def find_unvalidated_predictions(self) -> List[Prediction]:
         """
@@ -131,47 +153,26 @@ class PredictionValidator:
         actual_content: str
     ) -> Dict[str, float]:
         """
-        Calculate content similarity metrics.
+        Calculate content similarity metrics using enhanced semantic analysis.
+
+        This method now uses:
+        - BERTScore: Token-level contextual embeddings similarity
+        - Sentence Embeddings: Document-level semantic similarity
+        - Named Entity Recognition: Entity matching
+        - Lexical Metrics: Traditional word/character overlap
 
         Args:
             predicted_content: Predicted post text
             actual_content: Actual post text
 
         Returns:
-            Dict with similarity metrics
+            Dict with comprehensive similarity metrics
         """
-        # Length similarity
-        pred_len = len(predicted_content)
-        actual_len = len(actual_content)
-        length_similarity = 1 - abs(pred_len - actual_len) / max(pred_len, actual_len)
-
-        # Word overlap (Jaccard similarity)
-        pred_words = set(predicted_content.lower().split())
-        actual_words = set(actual_content.lower().split())
-
-        if pred_words or actual_words:
-            intersection = len(pred_words & actual_words)
-            union = len(pred_words | actual_words)
-            word_overlap = intersection / union if union > 0 else 0
-        else:
-            word_overlap = 0
-
-        # Character overlap
-        pred_chars = set(predicted_content.lower())
-        actual_chars = set(actual_content.lower())
-        char_overlap = len(pred_chars & actual_chars) / len(pred_chars | actual_chars) if (pred_chars | actual_chars) else 0
-
-        # Composite similarity (average of metrics)
-        composite_similarity = (length_similarity + word_overlap + char_overlap) / 3
-
-        return {
-            'length_similarity': length_similarity,
-            'word_overlap': word_overlap,
-            'character_overlap': char_overlap,
-            'composite_similarity': composite_similarity,
-            # Placeholder for BERTScore (can be added later)
-            'bertscore_f1': composite_similarity  # Use composite as proxy for now
-        }
+        # Use the enhanced similarity calculator
+        return self.similarity_calculator.calculate_all_metrics(
+            predicted_content,
+            actual_content
+        )
 
     def is_prediction_correct(
         self,
