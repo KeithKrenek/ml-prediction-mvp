@@ -45,11 +45,66 @@ features:
     - is_weekend
     - is_business_hours
     - time_since_last_post
-  
+
   context:
     - recent_news
     - stock_market
     - trending_topics
+
+# Advanced Feature Engineering Configuration (P2 Implementation)
+feature_engineering:
+  # Enable/disable feature groups
+  enabled_features:
+    temporal: true
+    engagement: true
+    historical: true
+    context: true
+
+  # Temporal features
+  use_cyclical_encoding: true  # Use sin/cos encoding for periodic features
+
+  # Engagement features
+  engagement_windows: [5, 10, 20]  # Rolling window sizes
+  normalize_engagement: true  # Normalize engagement metrics
+
+  # Historical pattern features
+  time_windows_hours: [1, 3, 6, 12, 24]  # Windows for counting posts
+  lookback_periods: [5, 10, 20]  # Number of previous posts to analyze
+  burst_threshold_minutes: 10  # Time threshold for burst detection
+
+  # Context features
+  market_threshold: 2.0  # Threshold for significant market moves (%)
+
+  # Prophet regressors (features to use in Prophet model)
+  prophet_regressors:
+    # Temporal features (cyclical encoding captures periodicity better)
+    - hour_sin
+    - hour_cos
+    - day_of_week_sin
+    - day_of_week_cos
+    - is_weekend
+    - is_business_hours
+
+    # Engagement features
+    - engagement_total
+    - engagement_rolling_mean_5
+    - engagement_momentum
+
+    # Historical pattern features (CRITICAL for burst detection)
+    - time_since_last_hours
+    - posts_last_1h
+    - posts_last_3h
+    - posts_last_6h
+    - is_burst_post
+    - burst_length
+    - posting_regularity
+
+    # Context features (reactive posting)
+    - news_total_articles
+    - is_breaking_news
+    - is_trump_trending
+    - market_avg_change
+    - is_significant_market_move
 
 # Evaluation Metrics
 evaluation:
@@ -122,6 +177,23 @@ validation:
   matching_window_hours: 24  # Time window for matching predictions to posts
   timing_threshold_hours: 6  # Within 6h = correct timing
   content_threshold: 0.3  # Minimum similarity for correct content
+
+  # Enhanced Similarity Metrics Configuration
+  similarity_metrics:
+    # Enable/disable specific metrics
+    use_bertscore: true  # BERTScore (semantic token-level matching)
+    use_sentence_embeddings: true  # Sentence Transformers (document-level)
+    use_entity_matching: true  # Named Entity Recognition matching
+
+    # Metric weights (must sum to 1.0, will be normalized if not)
+    weights:
+      bertscore: 0.40  # 40% weight on BERTScore
+      sentence: 0.30   # 30% weight on sentence embeddings
+      entity: 0.20     # 20% weight on entity matching
+      lexical: 0.10    # 10% weight on traditional lexical metrics
+
+    # BERTScore model (options: roberta-large, microsoft/deberta-xlarge-mnli)
+    bertscore_model: "microsoft/deberta-xlarge-mnli"
 
 # Real-time Context Integration
 context_integration:

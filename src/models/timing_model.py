@@ -16,6 +16,7 @@ import yaml
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.database import get_session, Post
+from features.engineering import FeatureEngineer
 
 try:
     from prophet import Prophet
@@ -32,10 +33,13 @@ class TimingPredictor:
     """
     
     def __init__(self, config_path="config/config.yaml"):
+        self.config_path = config_path
         self.config = self._load_config(config_path)
         self.model = None
         self.last_trained = None
         self.features_df = None
+        self.feature_engineer = None
+        self.enabled_regressors = []
         
     def _load_config(self, config_path):
         """Load configuration"""
@@ -86,28 +90,64 @@ class TimingPredictor:
         
         return df
     
-    def prepare_features(self, df):
+    def prepare_features(self, df, context=None):
         """
-        Prepare features for timing prediction.
+        Prepare features for timing prediction using FeatureEngineer.
         Prophet needs: ds (datetime), y (target)
+        Plus additional regressors from feature engineering.
+
+        Args:
+            df: DataFrame with post data
+            context: Optional context dict for context features
         """
-        # Create posting events (each post is an event)
-        prophet_df = pd.DataFrame({
-            'ds': df['created_at'],
-            'y': 1  # Binary: post happened
-        })
-        
-        # Add engagement as additional regressor (optional)
-        prophet_df['engagement'] = (
-            df['replies'].fillna(0) + 
-            df['reblogs'].fillna(0) + 
-            df['favourites'].fillna(0)
+        # Initialize feature engineer if not already done
+        if self.feature_engineer is None:
+            self.feature_engineer = FeatureEngineer(config_path=self.config_path)
+
+        # Standardize column names
+        df_standardized = df.copy()
+        if 'replies' in df.columns:
+            df_standardized['replies_count'] = df['replies']
+        if 'reblogs' in df.columns:
+            df_standardized['reblogs_count'] = df['reblogs']
+        if 'favourites' in df.columns:
+            df_standardized['favourites_count'] = df['favourites']
+
+        # Engineer all features
+        features_df = self.feature_engineer.engineer_features(
+            df_standardized,
+            context=context,
+            timestamp_col='created_at'
         )
-        
-        # Calculate time since last post (important feature)
-        prophet_df['time_since_last'] = prophet_df['ds'].diff().dt.total_seconds() / 3600  # hours
-        prophet_df['time_since_last'] = prophet_df['time_since_last'].fillna(24)  # default 24h
-        
+
+        # Get list of regressors to use from config
+        feature_config = self.config.get('feature_engineering', {})
+        self.enabled_regressors = feature_config.get('prophet_regressors', [
+            'hour_sin', 'hour_cos',
+            'day_of_week_sin', 'day_of_week_cos',
+            'is_weekend',
+            'is_business_hours',
+            'engagement_total',
+            'time_since_last_hours',
+            'posts_last_1h',
+            'posts_last_6h',
+            'is_burst_post'
+        ])
+
+        # Prepare Prophet DataFrame
+        prophet_df = self.feature_engineer.prepare_for_prophet(
+            features_df,
+            timestamp_col='created_at',
+            additional_regressors=self.enabled_regressors
+        )
+
+        # Fill any NaN values in regressors
+        for regressor in self.enabled_regressors:
+            if regressor in prophet_df.columns:
+                prophet_df[regressor] = prophet_df[regressor].fillna(0)
+
+        logger.info(f"Prepared features with {len(self.enabled_regressors)} regressors: {self.enabled_regressors[:5]}...")
+
         return prophet_df
     
     def train(self, df=None):
@@ -134,10 +174,15 @@ class TimingPredictor:
             changepoint_prior_scale=prophet_config.get('changepoint_prior_scale', 0.05),
             interval_width=prophet_config.get('interval_width', 0.95)
         )
-        
-        # Add engagement as additional regressor
-        # self.model.add_regressor('engagement')  # Uncomment if you want to use engagement
-        
+
+        # Add all enabled regressors to Prophet model
+        for regressor in self.enabled_regressors:
+            if regressor in prophet_df.columns:
+                self.model.add_regressor(regressor)
+                logger.debug(f"Added regressor: {regressor}")
+
+        logger.info(f"Training Prophet with {len(self.enabled_regressors)} regressors...")
+
         # Fit model
         logger.info(f"Training on {len(prophet_df)} posts...")
         self.model.fit(prophet_df)

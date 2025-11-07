@@ -16,6 +16,7 @@ import os
 import sys
 from pathlib import Path
 from datetime import datetime
+import yaml
 from loguru import logger
 
 # Add parent directory to path
@@ -28,6 +29,15 @@ from src.validation.validator import PredictionValidator
 from src.data.database import init_db
 
 
+def load_config() -> dict:
+    """Load configuration from config.yaml"""
+    config_path = Path(__file__).parent.parent / "config" / "config.yaml"
+    if config_path.exists():
+        with open(config_path, 'r') as f:
+            return yaml.safe_load(f)
+    return {}
+
+
 def main():
     """Main validation entry point"""
     start_time = datetime.now()
@@ -37,13 +47,24 @@ def main():
     logger.info(f"Started at: {start_time}")
     logger.info("="*80)
 
+    # Load configuration
+    config = load_config()
+    validation_config = config.get('validation', {})
+    similarity_config = validation_config.get('similarity_metrics', {})
+
     # Initialize database
     logger.info("Initializing database...")
     init_db()
 
-    # Create validator
-    logger.info("Initializing validator...")
-    validator = PredictionValidator(matching_window_hours=24)
+    # Create validator with enhanced similarity metrics
+    logger.info("Initializing validator with enhanced similarity metrics...")
+    validator = PredictionValidator(
+        matching_window_hours=validation_config.get('matching_window_hours', 24),
+        similarity_weights=similarity_config.get('weights'),
+        use_bertscore=similarity_config.get('use_bertscore', True),
+        use_sentence_embeddings=similarity_config.get('use_sentence_embeddings', True),
+        use_entity_matching=similarity_config.get('use_entity_matching', True)
+    )
 
     # Get current stats before validation
     logger.info("Current validation statistics:")
@@ -110,11 +131,10 @@ def main():
 
     logger.info("="*80)
 
-    # Exit code
-    if summary['validated'] > 0:
-        sys.exit(0)  # Success
-    else:
-        sys.exit(1)  # No predictions validated
+    # Exit with success - the script completed its job regardless of whether
+    # any predictions were validated. Having no predictions to validate is
+    # a normal state (e.g., first deployment, all caught up, recent predictions).
+    sys.exit(0)
 
 
 if __name__ == "__main__":
