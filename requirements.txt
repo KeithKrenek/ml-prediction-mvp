@@ -5,10 +5,11 @@ scikit-learn==1.4.0
 
 # Timing Model
 prophet==1.1.5
+cmdstanpy==1.2.2  # Required backend for Prophet
 torch==2.1.2  # For Neural Temporal Point Process (NTPP)
 
 # Content Model
-anthropic==0.39.0
+anthropic>=0.40.0  # Updated SDK with better compatibility
 
 # API & Web
 fastapi==0.109.0
