@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 from datetime import datetime
 from loguru import logger
+import requests
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -70,9 +71,27 @@ def main():
     archive_path = Path(__file__).parent.parent / "data" / "raw" / "truth_archive.json"
 
     if not archive_path.exists():
-        logger.error(f"Archive file not found: {archive_path}")
-        logger.info("Run: curl -o data/raw/truth_archive.json https://raw.githubusercontent.com/stiles/trump-truth-social-archive/main/data/truth_archive.json")
-        sys.exit(1)
+        logger.warning(f"Archive file not found: {archive_path}")
+        logger.info("Downloading from GitHub archive...")
+
+        # Create directory if needed
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Download archive
+        url = "https://raw.githubusercontent.com/stiles/trump-truth-social-archive/main/data/truth_archive.json"
+        try:
+            response = requests.get(url, timeout=120)
+            response.raise_for_status()
+
+            with open(archive_path, 'w') as f:
+                json.dump(response.json(), f)
+
+            logger.success(f"Downloaded archive to: {archive_path}")
+        except Exception as e:
+            logger.error(f"Failed to download archive: {e}")
+            logger.info("Please manually download:")
+            logger.info(f"  curl -o {archive_path} {url}")
+            sys.exit(1)
 
     logger.info(f"Loading archive from: {archive_path}")
     with open(archive_path, 'r') as f:
