@@ -8,20 +8,37 @@ data_collection:
   
 # Timing Model Configuration
 timing_model:
-  type: "prophet"  # Options: prophet, survival, neural_tpp
+  type: "ntpp"  # Options: "prophet", "ntpp" (neural_tpp)
+
+  # Prophet Configuration (traditional time-series)
   prophet:
     daily_seasonality: true
     weekly_seasonality: true
     yearly_seasonality: false
     changepoint_prior_scale: 0.05
     interval_width: 0.95
-  
-  # For future Neural TPP implementation
+
+  # Neural Temporal Point Process Configuration (P0 implementation)
+  # Better for high-frequency, bursty posting (20+ posts/day)
   neural_tpp:
-    hidden_size: 64
-    num_layers: 2
-    learning_rate: 0.001
-    epochs: 50
+    # Model architecture
+    hidden_size: 64  # LSTM hidden dimension
+    num_layers: 2  # Number of LSTM layers
+    dropout: 0.1  # Dropout rate for regularization
+
+    # Training parameters
+    learning_rate: 0.001  # Adam learning rate
+    epochs: 50  # Training epochs (50-100 recommended)
+    batch_size: 32  # Batch size for training
+    sequence_length: 20  # History length (number of previous posts)
+    validation_split: 0.2  # Fraction for validation
+
+    # Prediction parameters
+    max_prediction_hours: 48  # Maximum hours to predict ahead
+    sample_method: "expected"  # "expected" or "sample"
+
+    # Device
+    device: "auto"  # "auto", "cpu", or "cuda"
 
 # Content Model Configuration
 content_model:
