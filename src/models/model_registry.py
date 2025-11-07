@@ -526,7 +526,11 @@ class ModelRegistry:
 
             if status in ['completed', 'failed']:
                 run.completed_at = datetime.now(timezone.utc)
-                run.duration_seconds = (run.completed_at - run.started_at).total_seconds()
+                # Ensure both datetimes are timezone-aware for subtraction
+                started = run.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                run.duration_seconds = (run.completed_at - started).total_seconds()
 
             if metrics:
                 for key, value in metrics.items():
