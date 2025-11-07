@@ -110,11 +110,10 @@ def main():
 
     logger.info("="*80)
 
-    # Exit code
-    if summary['validated'] > 0:
-        sys.exit(0)  # Success
-    else:
-        sys.exit(1)  # No predictions validated
+    # Exit with success - the script completed its job regardless of whether
+    # any predictions were validated. Having no predictions to validate is
+    # a normal state (e.g., first deployment, all caught up, recent predictions).
+    sys.exit(0)
 
 
 if __name__ == "__main__":
