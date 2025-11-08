@@ -299,7 +299,12 @@ class ContextSnapshot(Base):
 def get_engine(database_url=None):
     """Get database engine"""
     if database_url is None:
-        database_url = os.getenv('DATABASE_URL', 'sqlite:///./data/trump_predictions.db')
+        # Use absolute path for SQLite to avoid issues with working directory
+        default_db_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+            'data', 'trump_predictions.db'
+        )
+        database_url = os.getenv('DATABASE_URL', f'sqlite:///{default_db_path}')
 
     # Create data directory if using SQLite and directory doesn't exist
     if database_url.startswith('sqlite:///'):
