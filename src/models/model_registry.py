@@ -55,7 +55,7 @@ class ModelRegistry:
         Format: {algorithm}_{model_type}_{timestamp}_{short_uuid}
         Example: prophet_timing_20251106_120000_a3f2
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         short_uuid = str(uuid.uuid4())[:8]
         return f"{algorithm}_{model_type}_{timestamp}_{short_uuid}"
 
@@ -70,7 +70,8 @@ class ModelRegistry:
         training_duration: float,
         hyperparameters: Dict,
         notes: str = None,
-        created_by: str = "system"
+        created_by: str = "system",
+        version_id: str = None
     ) -> ModelVersion:
         """
         Register a new trained model in the registry.
@@ -86,11 +87,13 @@ class ModelRegistry:
             hyperparameters: Model configuration dict
             notes: Optional notes about this version
             created_by: Who created this ('system', 'manual', 'cron')
+            version_id: Optional version ID (if None, one will be generated)
 
         Returns:
             ModelVersion object
         """
-        version_id = self.generate_version_id(model_type, algorithm)
+        if version_id is None:
+            version_id = self.generate_version_id(model_type, algorithm)
 
         # Get file size
         file_size = os.path.getsize(model_file_path) if os.path.exists(model_file_path) else 0
@@ -190,8 +193,13 @@ class ModelRegistry:
                 logger.error(f"Model version {version_id} not found")
                 return False
 
-            # Demote current production model
-            current_prod = self.get_production_model(new_model.model_type)
+            # Demote current production model (query in SAME session to avoid race condition)
+            current_prod = (
+                session.query(ModelVersion)
+                .filter_by(model_type=new_model.model_type, is_production=True)
+                .order_by(ModelVersion.promoted_at.desc())
+                .first()
+            )
             if current_prod:
                 logger.info(f"Demoting current production model: {current_prod.version_id}")
                 current_prod.is_production = False
@@ -486,7 +494,7 @@ class ModelRegistry:
         config_snapshot: Dict
     ) -> TrainingRun:
         """Create a new training run record."""
-        run_id = f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
+        run_id = f"run_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{str(uuid.uuid4())[:8]}"
 
         training_run = TrainingRun(
             run_id=run_id,
