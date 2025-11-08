@@ -116,8 +116,9 @@ def retrain_timing_model(registry: ModelRegistry, evaluator: ModelEvaluator, con
             num_training_samples=len(train_df),
             training_duration=training_duration,
             hyperparameters=model.config,
-            notes=f"Automated retraining - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            created_by='cron'
+            notes=f"Automated retraining - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}",
+            created_by='cron',
+            version_id=version_id
         )
 
         logger.success(f"Model version registered: {version_id}")
@@ -278,8 +279,9 @@ def retrain_content_model(registry: ModelRegistry, evaluator: ModelEvaluator, co
             num_training_samples=len(train_df),
             training_duration=training_duration,
             hyperparameters=generator.config,
-            notes=f"Automated example set update - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            created_by='cron'
+            notes=f"Automated example set update - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')}",
+            created_by='cron',
+            version_id=version_id
         )
 
         logger.success(f"Model version registered: {version_id}")
@@ -339,7 +341,7 @@ def retrain_content_model(registry: ModelRegistry, evaluator: ModelEvaluator, co
 
 def main():
     """Main retraining entry point"""
-    start_time = datetime.now()
+    start_time = datetime.now(timezone.utc)
 
     logger.info("="*80)
     logger.info("AUTOMATED MODEL RETRAINING")
@@ -391,7 +393,7 @@ def main():
         registry.archive_old_versions(keep_recent=keep_versions)
 
     # Summary
-    end_time = datetime.now()
+    end_time = datetime.now(timezone.utc)
     duration = (end_time - start_time).total_seconds()
 
     logger.info("="*80)
