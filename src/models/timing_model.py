@@ -195,26 +195,64 @@ class TimingPredictor:
     def predict_next(self, periods_ahead=24):
         """
         Predict next post time(s).
-        
+
         Args:
             periods_ahead: Number of hours to forecast
-            
+
         Returns:
             DataFrame with predictions
         """
         if self.model is None:
             logger.error("Model not trained! Call train() first.")
             return None
-        
+
         # Create future dataframe
         future = self.model.make_future_dataframe(periods=periods_ahead, freq='H')
-        
+
+        # Add regressor values to future dataframe
+        # Extract regressors from the model (they were added during training)
+        if hasattr(self, 'enabled_regressors') and self.enabled_regressors:
+            import numpy as np
+
+            # Add regressor values based on timestamp
+            for col in self.enabled_regressors:
+                if col in ['hour_sin', 'hour_cos']:
+                    # Cyclical hour encoding
+                    hours = future['ds'].dt.hour
+                    if col == 'hour_sin':
+                        future[col] = np.sin(2 * np.pi * hours / 24)
+                    else:
+                        future[col] = np.cos(2 * np.pi * hours / 24)
+
+                elif col in ['day_of_week_sin', 'day_of_week_cos']:
+                    # Cyclical day of week encoding
+                    dow = future['ds'].dt.dayofweek
+                    if col == 'day_of_week_sin':
+                        future[col] = np.sin(2 * np.pi * dow / 7)
+                    else:
+                        future[col] = np.cos(2 * np.pi * dow / 7)
+
+                elif col == 'is_weekend':
+                    future[col] = (future['ds'].dt.dayofweek >= 5).astype(int)
+
+                elif col == 'is_business_hours':
+                    hour = future['ds'].dt.hour
+                    dow = future['ds'].dt.dayofweek
+                    future[col] = ((hour >= 9) & (hour <= 17) & (dow < 5)).astype(int)
+
+                else:
+                    # For other regressors (engagement, historical patterns), use mean from training
+                    if col in self.features_df.columns:
+                        future[col] = self.features_df[col].mean()
+                    else:
+                        future[col] = 0.0
+
         # Make predictions
         forecast = self.model.predict(future)
-        
+
         # Get predictions for future only
         future_forecast = forecast[forecast['ds'] > self.features_df['ds'].max()]
-        
+
         return future_forecast
     
     def get_next_post_time(self):
