@@ -119,21 +119,37 @@ class ModelEvaluator:
                 return None
 
             # For each test post, find closest prediction
+            import pandas as pd
+
             for i in range(min(len(test_df), max_predictions)):
                 actual_time = test_df.iloc[i]['created_at']
 
-                # Ensure actual_time is timezone-aware (match forecast timezone)
-                if actual_time.tzinfo is None:
-                    from datetime import timezone
-                    actual_time = actual_time.replace(tzinfo=timezone.utc)
+                # Convert to pandas Timestamp for consistent handling
+                if not isinstance(actual_time, pd.Timestamp):
+                    actual_time = pd.Timestamp(actual_time)
 
-                # Find closest forecast time
-                time_diffs = abs((forecast['ds'] - actual_time).dt.total_seconds())
+                # Ensure timezone compatibility between forecast and actual
+                # Remove timezone info from both to avoid comparison issues
+                if forecast['ds'].dt.tz is not None:
+                    forecast_times = forecast['ds'].dt.tz_localize(None)
+                else:
+                    forecast_times = forecast['ds']
+
+                if hasattr(actual_time, 'tz') and actual_time.tz is not None:
+                    actual_time_naive = actual_time.tz_localize(None)
+                elif hasattr(actual_time, 'tzinfo') and actual_time.tzinfo is not None:
+                    actual_time_naive = actual_time.replace(tzinfo=None)
+                else:
+                    actual_time_naive = actual_time
+
+                # Find closest forecast time (using naive datetimes)
+                time_diffs = abs((forecast_times - actual_time_naive).dt.total_seconds())
                 closest_idx = time_diffs.idxmin()
                 closest_forecast = forecast.loc[closest_idx]
 
-                # Calculate error
-                error_hours = abs((closest_forecast['ds'] - actual_time).total_seconds() / 3600)
+                # Calculate error (use naive times to avoid timezone issues)
+                pred_time_naive = pd.Timestamp(closest_forecast['ds']).tz_localize(None) if hasattr(pd.Timestamp(closest_forecast['ds']), 'tz') else pd.Timestamp(closest_forecast['ds'])
+                error_hours = abs((pred_time_naive - actual_time_naive).total_seconds() / 3600)
 
                 predictions.append({
                     'predicted_time': closest_forecast['ds'],
