@@ -9,6 +9,9 @@ uvicorn[standard]==0.27.0
 pydantic==2.5.3
 python-multipart==0.0.6
 
+# Background Scheduler (used by API for scheduled tasks)
+apscheduler==3.10.4
+
 # Timing model (Prophet is heavy but needed for predictions)
 prophet==1.1.5
 cmdstanpy==1.2.2
@@ -17,3 +20,7 @@ cmdstanpy==1.2.2
 anthropic>=0.45.2
 httpx>=0.28.0
 
+# Real-time Context (for predictions)
+newsapi-python==0.2.7
+feedparser==6.0.11
+yfinance==0.2.36
