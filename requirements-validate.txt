@@ -1,0 +1,9 @@
+# Requirements for validation cron job
+# Lightweight - just database queries + basic similarity
+
+-r requirements-base.txt
+
+# Note: The validation script uses lazy loading for heavy dependencies.
+# Without bert-score/sentence-transformers, it falls back to lexical metrics.
+# This is intentional to keep validation fast and lightweight.
+

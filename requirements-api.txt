@@ -1,0 +1,19 @@
+# Requirements for FastAPI server
+# Medium weight - API + basic prediction loading
+
+-r requirements-base.txt
+
+# API Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+python-multipart==0.0.6
+
+# Timing model (Prophet is heavy but needed for predictions)
+prophet==1.1.5
+cmdstanpy==1.2.2
+
+# Content model client only (not training)
+anthropic>=0.45.2
+httpx>=0.28.0
+

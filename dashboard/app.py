@@ -19,20 +19,39 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file FIRST
 load_dotenv()
 
-# For Streamlit Cloud: Load secrets as environment variables
+# For Streamlit Cloud: Load secrets as environment variables BEFORE any imports
+# that might use DATABASE_URL. This MUST happen before importing database modules.
 if hasattr(st, 'secrets'):
     for key, value in st.secrets.items():
-        os.environ[key] = str(value)
+        if key not in os.environ or not os.environ[key]:
+            os.environ[key] = str(value)
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
 
-from src.predictor import TrumpPostPredictor
+
+def get_database_info():
+    """Get information about which database is being used."""
+    db_url = os.getenv('DATABASE_URL', '')
+    if not db_url:
+        return "SQLite (local)", "⚠️ No DATABASE_URL configured", False
+    elif 'neon.tech' in db_url:
+        return "Neon PostgreSQL", "✅ Connected to Neon", True
+    elif 'postgresql' in db_url or 'postgres' in db_url:
+        return "PostgreSQL", "✅ Connected to PostgreSQL", True
+    elif 'sqlite' in db_url:
+        return "SQLite (local)", "⚠️ Using local SQLite", False
+    else:
+        return "Unknown", f"Database: {db_url[:30]}...", False
+
+
+# Import database models (lightweight)
 from src.data.database import (
     get_session,
+    init_db,
     Post,
     Prediction,
     ContextSnapshot,
@@ -40,8 +59,57 @@ from src.data.database import (
     ModelVersion,
     CronRunLog,
 )
-from src.validation.validator import PredictionValidator
-from src.context.context_gatherer import RealTimeContextGatherer
+
+# Initialize database tables on startup (creates tables if they don't exist)
+try:
+    init_db()
+except Exception as e:
+    st.error(f"Database initialization failed: {e}")
+
+# LAZY IMPORTS: Heavy ML dependencies are only loaded when needed
+# This avoids loading torch/prophet on pages that don't need predictions
+_predictor = None
+_validator = None
+_context_gatherer = None
+
+
+def get_predictor_lazy():
+    """Lazy load the predictor only when needed (avoids torch import on startup)."""
+    global _predictor
+    if _predictor is None:
+        try:
+            from src.predictor import TrumpPostPredictor
+            _predictor = TrumpPostPredictor()
+        except Exception as e:
+            st.error(f"Failed to load predictor: {e}")
+            return None
+    return _predictor
+
+
+def get_validator_lazy():
+    """Lazy load the validator only when needed."""
+    global _validator
+    if _validator is None:
+        try:
+            from src.validation.validator import PredictionValidator
+            _validator = PredictionValidator()
+        except Exception as e:
+            st.error(f"Failed to load validator: {e}")
+            return None
+    return _validator
+
+
+def get_context_gatherer_lazy():
+    """Lazy load the context gatherer only when needed."""
+    global _context_gatherer
+    if _context_gatherer is None:
+        try:
+            from src.context.context_gatherer import RealTimeContextGatherer
+            _context_gatherer = RealTimeContextGatherer()
+        except Exception as e:
+            st.error(f"Failed to load context gatherer: {e}")
+            return None
+    return _context_gatherer
 
 
 # ============================================================================
@@ -132,8 +200,8 @@ st.markdown("""
 
 @st.cache_resource
 def get_predictor():
-    """Initialize and cache the predictor"""
-    return TrumpPostPredictor()
+    """Initialize and cache the predictor (lazy loaded to avoid torch import on startup)"""
+    return get_predictor_lazy()
 
 
 @st.cache_data(ttl=300)  # Cache for 5 minutes
@@ -150,15 +218,19 @@ def load_recent_posts(limit=50):
         
         data = []
         for post in posts:
+            content = post.content or ""
             data.append({
                 'Date': post.created_at,
-                'Content': post.content[:100] + '...' if len(post.content) > 100 else post.content,
-                'Replies': post.replies_count,
-                'Reblogs': post.reblogs_count,
-                'Favorites': post.favourites_count,
+                'Content': content[:100] + '...' if len(content) > 100 else content,
+                'Replies': post.replies_count or 0,
+                'Reblogs': post.reblogs_count or 0,
+                'Favorites': post.favourites_count or 0,
             })
         
         return pd.DataFrame(data)
+    except Exception as e:
+        # Table might not exist or be empty
+        return pd.DataFrame()
     finally:
         session.close()
 
@@ -281,6 +353,9 @@ def load_cron_runs(limit=50):
                 'Metadata': run.extra_metadata
             })
         return pd.DataFrame(data)
+    except Exception as e:
+        # Table might not exist yet - return empty DataFrame
+        return pd.DataFrame()
     finally:
         session.close()
 
@@ -352,6 +427,13 @@ def get_posting_stats():
             'posts_last_week': posts_last_week,
             'latest_post_time': latest_post.created_at if latest_post else None
         }
+    except Exception as e:
+        # Table might not exist yet
+        return {
+            'total_posts': 0,
+            'posts_last_week': 0,
+            'latest_post_time': None
+        }
     finally:
         session.close()
 
@@ -381,6 +463,16 @@ page = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 
+# Database connection indicator
+db_type, db_status, is_production = get_database_info()
+if is_production:
+    st.sidebar.success(db_status)
+else:
+    st.sidebar.warning(db_status)
+st.sidebar.caption(f"Database: {db_type}")
+
+st.sidebar.markdown("---")
+
 # Stats in sidebar
 stats = get_posting_stats()
 st.sidebar.metric("Total Posts in DB", stats['total_posts'])
@@ -404,9 +496,22 @@ if page == "🎯 Make Prediction":
     
     with col2:
         if st.button("🔮 Generate Prediction", type="primary", use_container_width=True):
-            with st.spinner("Training models and generating prediction..."):
+            with st.spinner("Loading prediction models..."):
                 try:
                     predictor = get_predictor()
+                    
+                    if predictor is None:
+                        st.error("""
+                        ⚠️ **Prediction models not available on Streamlit Cloud**
+                        
+                        The prediction models require heavy ML dependencies (PyTorch, Prophet) 
+                        that aren't compatible with Streamlit Cloud's environment.
+                        
+                        **Predictions are generated automatically by the backend cron jobs on Render.**
+                        
+                        Check the **📊 Dashboard** page to see recent predictions!
+                        """)
+                        st.stop()
                     
                     # Train if needed
                     if not hasattr(predictor.timing_model, 'model') or predictor.timing_model.model is None:
@@ -664,8 +769,12 @@ elif page == "🎯 Validation Timeline":
     st.title("🎯 Prediction Validation Timeline")
     st.markdown("Compare predicted vs actual posts side-by-side with accurate timestamps.")
 
-    # Load validation data
-    validator = PredictionValidator()
+    # Load validation data (lazy loaded to avoid heavy imports)
+    validator = get_validator_lazy()
+    
+    if validator is None:
+        st.error("Could not load validator. Check logs for details.")
+        st.stop()
 
     # Get validation stats
     stats = validator.get_validation_stats()
@@ -916,12 +1025,12 @@ elif page == "🌐 Real-time Context":
     st.title("🌐 Real-time Context Integration")
     st.markdown("View current real-time context data used for predictions.")
 
-    # Initialize context gatherer
-    @st.cache_resource
-    def get_context_gatherer():
-        return RealTimeContextGatherer()
-
-    context_gatherer = get_context_gatherer()
+    # Initialize context gatherer (lazy loaded)
+    context_gatherer = get_context_gatherer_lazy()
+    
+    if context_gatherer is None:
+        st.error("Could not load context gatherer. Check logs for details.")
+        st.stop()
 
     # Add refresh button
     col1, col2, col3 = st.columns([2, 1, 1])
@@ -1124,6 +1233,35 @@ elif page == "🌐 Real-time Context":
 elif page == "⚙️ About":
     st.title("⚙️ About This System")
     
+    # Database Status Section
+    st.markdown("### 🗄️ Database Connection")
+    db_type, db_status, is_production = get_database_info()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("Database Type", db_type)
+    with col2:
+        if is_production:
+            st.success(db_status)
+        else:
+            st.warning(db_status)
+    
+    if not is_production:
+        st.error("""
+        ⚠️ **Not Connected to Production Database!**
+        
+        The app is showing data from a local SQLite database, not the production Neon database.
+        
+        **To fix this:**
+        1. Go to Streamlit Cloud → Your App → Settings → Secrets
+        2. Add: `DATABASE_URL = "postgresql://user:pass@ep-xxx.neon.tech/db?sslmode=require"`
+        3. Save and restart the app
+        
+        See `STREAMLIT_SETUP.md` for detailed instructions.
+        """)
+    
+    st.markdown("---")
+    
     st.markdown("""
     ## Trump Truth Social Post Prediction System
     
@@ -1135,7 +1273,7 @@ elif page == "⚙️ About":
     **Data Collection:**
     - Multiple sources: Apify, ScrapeCreators, GitHub Archive
     - Polls every 5 minutes for new posts
-    - Stores in SQLite database
+    - Stores in PostgreSQL (Neon) database
     
     **Timing Prediction:**
     - Model: Facebook Prophet (time series forecasting)
@@ -1152,7 +1290,7 @@ elif page == "⚙️ About":
     - **Backend:** Python, FastAPI, SQLAlchemy
     - **ML:** Prophet, Anthropic Claude API
     - **Frontend:** Streamlit
-    - **Database:** SQLite (MVP) → PostgreSQL (production)
+    - **Database:** Neon PostgreSQL (production)
     - **Deployment:** Render.com, Streamlit Cloud
     
     ### Cost

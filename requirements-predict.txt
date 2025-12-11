@@ -1,0 +1,18 @@
+# Requirements for prediction cron job
+# Medium weight - needs Prophet + Anthropic
+
+-r requirements-base.txt
+
+# Timing Model
+prophet==1.1.5
+cmdstanpy==1.2.2
+
+# Content Model
+anthropic>=0.45.2
+httpx>=0.28.0
+
+# Real-time Context (lightweight)
+newsapi-python==0.2.7
+feedparser==6.0.11
+yfinance==0.2.36
+

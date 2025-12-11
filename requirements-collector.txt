@@ -1,0 +1,9 @@
+# Requirements for data collection cron job
+# VERY lightweight - just scraping + database
+
+-r requirements-base.txt
+
+# Data Collection
+beautifulsoup4==4.12.3
+apify-client==1.6.3
+

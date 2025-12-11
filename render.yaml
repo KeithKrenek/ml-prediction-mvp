@@ -1,12 +1,13 @@
 # render.yaml - Render.com deployment configuration
+# OPTIMIZED: Uses service-specific requirements for faster builds
 
 services:
-  # FastAPI Backend
+  # FastAPI Backend (~5-8 min build)
   - type: web
     name: trump-prediction-api
     runtime: python
     plan: free  # Free tier
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-api.txt
     startCommand: uvicorn src.api.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
@@ -22,13 +23,13 @@ services:
         value: 0.0.0.0
     autoDeploy: true
     
-  # Data Collection Cron Job (runs every 30 minutes)
+  # Data Collection Cron Job (~2-3 min build) - VERY FAST
   - type: cron
     name: trump-prediction-collector
     runtime: python
     plan: starter
     schedule: "*/30 * * * *"  # Every 30 minutes
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-collector.txt
     startCommand: python scripts/cron_collect.py
     envVars:
       - key: PYTHON_VERSION
@@ -39,17 +40,17 @@ services:
         sync: false
       - key: APIFY_API_TOKEN
         sync: false
-      - key: SCRAPECREATORS_API_KEY
+      - key: SCRAPFLY_API_KEY
         sync: false
     autoDeploy: true
 
-  # Prediction Cron Job (runs every 6 hours)
+  # Prediction Cron Job (~5-8 min build)
   - type: cron
     name: trump-prediction-scheduler
     runtime: python
     plan: starter
     schedule: "0 */6 * * *"  # Every 6 hours (at 00:00, 06:00, 12:00, 18:00)
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-predict.txt
     startCommand: python scripts/cron_predict.py
     envVars:
       - key: PYTHON_VERSION
@@ -62,13 +63,13 @@ services:
         value: production
     autoDeploy: true
 
-  # Model Retraining Cron Job (runs weekly on Sunday at 3am)
+  # Model Retraining Cron Job (~15-20 min build) - Heavy but runs weekly
   - type: cron
     name: trump-model-retrainer
     runtime: python
     plan: starter
     schedule: "0 3 * * 0"  # Every Sunday at 3:00 AM UTC
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-retrain.txt
     startCommand: python scripts/cron_retrain.py
     envVars:
       - key: PYTHON_VERSION
@@ -81,13 +82,13 @@ services:
         value: production
     autoDeploy: true
 
-  # Prediction Validation Cron Job (runs every hour)
+  # Prediction Validation Cron Job (~2-3 min build) - VERY FAST
   - type: cron
     name: trump-prediction-validator
     runtime: python
     plan: starter
     schedule: "0 * * * *"  # Every hour at :00
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements-validate.txt
     startCommand: python scripts/cron_validate.py
     envVars:
       - key: PYTHON_VERSION

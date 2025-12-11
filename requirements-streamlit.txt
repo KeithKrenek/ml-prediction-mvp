@@ -1,0 +1,30 @@
+# Requirements for Streamlit Cloud Dashboard
+# Lightweight - avoids torch/heavy ML dependencies to prevent compatibility issues
+
+# Database
+sqlalchemy==2.0.25
+psycopg2-binary==2.9.11
+
+# Utilities
+python-dotenv==1.0.0
+pyyaml==6.0.1
+loguru==0.7.2
+requests==2.31.0
+
+# Data processing
+pandas==2.1.4
+numpy==1.26.2
+
+# Dashboard
+streamlit==1.30.0
+plotly==5.18.0
+
+# Real-time Context (lightweight APIs)
+newsapi-python==0.2.7
+feedparser==6.0.11
+yfinance==0.2.36
+
+# Note: We intentionally exclude torch, prophet, sentence-transformers, bert-score
+# These cause compatibility issues on Streamlit Cloud and aren't needed for viewing data.
+# The "Make Prediction" feature will show a message that predictions should be made via cron jobs.
+
