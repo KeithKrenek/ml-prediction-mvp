@@ -24,10 +24,16 @@ load_dotenv()
 
 # For Streamlit Cloud: Load secrets as environment variables BEFORE any imports
 # that might use DATABASE_URL. This MUST happen before importing database modules.
-if hasattr(st, 'secrets'):
-    for key, value in st.secrets.items():
-        if key not in os.environ or not os.environ[key]:
-            os.environ[key] = str(value)
+if hasattr(st, 'secrets') and len(st.secrets) > 0:
+    try:
+        for key in st.secrets:
+            value = st.secrets[key]
+            # Only set if it's a string (not a nested TOML section)
+            if isinstance(value, str):
+                os.environ[key] = value
+    except Exception as e:
+        # Silently handle errors in secrets loading
+        pass
 
 # Add parent directory to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -219,8 +225,12 @@ def load_recent_posts(limit=50):
         data = []
         for post in posts:
             content = post.content or ""
+            # Handle potential None values for created_at
+            created_at = post.created_at
+            if created_at is None:
+                continue  # Skip posts without dates
             data.append({
-                'Date': post.created_at,
+                'Date': created_at,
                 'Content': content[:100] + '...' if len(content) > 100 else content,
                 'Replies': post.replies_count or 0,
                 'Reblogs': post.reblogs_count or 0,
@@ -229,7 +239,10 @@ def load_recent_posts(limit=50):
         
         return pd.DataFrame(data)
     except Exception as e:
-        # Table might not exist or be empty
+        # Log the error for debugging
+        import traceback
+        st.error(f"Database error: {e}")
+        st.code(traceback.format_exc())
         return pd.DataFrame()
     finally:
         session.close()
@@ -997,6 +1010,11 @@ elif page == "🎯 Validation Timeline":
 elif page == "📝 Recent Posts":
     st.title("📝 Recent Posts")
     
+    # Show database connection info
+    db_type, db_status, is_production = get_database_info()
+    if not is_production:
+        st.warning(f"⚠️ {db_status} - Make sure DATABASE_URL is configured in Streamlit secrets")
+    
     posts_df = load_recent_posts(limit=50)
     
     if not posts_df.empty:
@@ -1004,7 +1022,11 @@ elif page == "📝 Recent Posts":
         
         # Display each post
         for idx, row in posts_df.iterrows():
-            with st.expander(f"📅 {row['Date'].strftime('%Y-%m-%d %H:%M')}"):
+            try:
+                date_str = row['Date'].strftime('%Y-%m-%d %H:%M') if row['Date'] else "Unknown date"
+            except:
+                date_str = str(row['Date'])
+            with st.expander(f"📅 {date_str}"):
                 st.markdown(f"**Content:** {row['Content']}")
                 
                 col1, col2, col3 = st.columns(3)
@@ -1014,6 +1036,21 @@ elif page == "📝 Recent Posts":
     
     else:
         st.warning("No posts in database yet.")
+        
+        # Show debugging info
+        with st.expander("🔍 Debug Info"):
+            st.markdown(f"**Database:** {db_type}")
+            st.markdown(f"**Status:** {db_status}")
+            
+            # Try to get count directly
+            try:
+                session = get_session()
+                count = session.query(Post).count()
+                session.close()
+                st.markdown(f"**Post count in database:** {count}")
+            except Exception as e:
+                st.error(f"Could not query database: {e}")
+        
         st.info("Run the data collector to fetch historical posts:\n```bash\npython src/data/collector.py\n```")
 
 

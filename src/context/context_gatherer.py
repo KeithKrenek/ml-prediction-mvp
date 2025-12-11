@@ -702,11 +702,14 @@ class RealTimeContextGatherer:
             top_trends = ', '.join(context['trending_keywords'][:5])
             summary_parts.append(f"Trending: {top_trends}")
 
-        # Market
+        # Market - ensure sp_change is a number (not None)
         if context.get('market_sentiment'):
             sentiment = context['market_sentiment']
-            sp_change = context.get('sp500_change_pct', 0)
-            summary_parts.append(f"Market: {sentiment} (S&P {sp_change:+.2f}%)")
+            sp_change = context.get('sp500_change_pct')
+            if sp_change is not None:
+                summary_parts.append(f"Market: {sentiment} (S&P {sp_change:+.2f}%)")
+            else:
+                summary_parts.append(f"Market: {sentiment}")
 
         return " | ".join(summary_parts) if summary_parts else "Limited context available"
 
