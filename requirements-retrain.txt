@@ -3,9 +3,6 @@
 
 -r requirements-base.txt
 
-# ML & Data Processing
-scikit-learn==1.4.0
-
 # Timing Model
 prophet==1.1.5
 cmdstanpy==1.2.2
@@ -15,7 +12,7 @@ anthropic>=0.45.2
 httpx>=0.28.0
 
 # Evaluation & Similarity (HEAVY - only needed for retraining)
-bert-score==0.3.1
+bert-score==0.3.13
 sentence-transformers==2.3.1
 
 # Note: torch is auto-installed by sentence-transformers

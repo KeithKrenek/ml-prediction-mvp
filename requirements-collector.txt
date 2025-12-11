@@ -6,4 +6,4 @@
 # Data Collection
 beautifulsoup4==4.12.3
 apify-client==1.6.3
-
+schedule==1.2.2
