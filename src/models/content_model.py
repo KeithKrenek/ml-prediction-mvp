@@ -625,29 +625,29 @@ Generated post:"""
             )
         else:
             # Fallback to basic prompt for backwards compatibility
-        time_context = ""
-        if predicted_time:
-            time_context = f"Time context: {predicted_time.strftime('%A, %B %d, %Y at %I:%M %p')}"
+            time_context = ""
+            if predicted_time:
+                time_context = f"Time context: {predicted_time.strftime('%A, %B %d, %Y at %I:%M %p')}"
 
-        news_context = ""
-        trending_context = ""
-        market_context = ""
+            news_context = ""
+            trending_context = ""
+            market_context = ""
 
-        if context:
-            if 'news_summary' in context and context['news_summary']:
-                news_context = f"Recent news: {context['news_summary']}"
-            if 'trending_keywords' in context and context['trending_keywords']:
-                top_trends = ', '.join(context['trending_keywords'][:5])
-                trending_context = f"Trending topics: {top_trends}"
-            if 'market_sentiment' in context:
-                sentiment = context['market_sentiment']
-                sp_change = context.get('sp500_change_pct', 0)
-                market_context = f"Market: {sentiment} (S&P {sp_change:+.1f}%)"
+            if context:
+                if 'news_summary' in context and context['news_summary']:
+                    news_context = f"Recent news: {context['news_summary']}"
+                if 'trending_keywords' in context and context['trending_keywords']:
+                    top_trends = ', '.join(context['trending_keywords'][:5])
+                    trending_context = f"Trending topics: {top_trends}"
+                if 'market_sentiment' in context:
+                    sentiment = context['market_sentiment']
+                    sp_change = context.get('sp500_change_pct', 0)
+                    market_context = f"Market: {sentiment} (S&P {sp_change:+.1f}%)"
 
-        examples = self.format_examples()
-        context_section = "\n".join(filter(None, [time_context, news_context, trending_context, market_context]))
+            examples = self.format_examples()
+            context_section = "\n".join(filter(None, [time_context, news_context, trending_context, market_context]))
 
-        prompt = f"""You are generating a social media post in the style of Donald Trump's Truth Social posts.
+            prompt = f"""You are generating a social media post in the style of Donald Trump's Truth Social posts.
 
 Below are real examples of his posting style:
 
@@ -771,20 +771,20 @@ Generated post:"""
         
         # 1. Style similarity (existing metric)
         similarity_score = 0.5
-            similarity_details = {}
-            if self.similarity_metrics and self.example_posts:
-                try:
-                    similarity_scores = []
-                    for example in self.example_posts:
-                        metrics = self.similarity_metrics.calculate_all_metrics(
-                            generated_content,
-                            example['content']
-                        )
-                        similarity_scores.append(metrics)
-                    if similarity_scores:
-                        best_metrics = max(similarity_scores, key=lambda m: m['composite_similarity'])
+        similarity_details = {}
+        if self.similarity_metrics and self.example_posts:
+            try:
+                similarity_scores = []
+                for example in self.example_posts:
+                    metrics = self.similarity_metrics.calculate_all_metrics(
+                        generated_content,
+                        example['content']
+                    )
+                    similarity_scores.append(metrics)
+                if similarity_scores:
+                    best_metrics = max(similarity_scores, key=lambda m: m['composite_similarity'])
                     similarity_score = best_metrics['composite_similarity']
-                        similarity_details = best_metrics
+                    similarity_details = best_metrics
             except Exception as exc:
                 logger.warning(f"Failed to calculate similarity: {exc}")
         
