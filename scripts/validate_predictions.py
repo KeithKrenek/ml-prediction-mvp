@@ -38,8 +38,8 @@ def load_config() -> dict:
     return {}
 
 
-def main():
-    """Main validation entry point"""
+def run_validation():
+    """Execute validation and return summary + duration."""
     start_time = datetime.now()
 
     logger.info("="*80)
@@ -131,6 +131,12 @@ def main():
 
     logger.info("="*80)
 
+    return summary, duration
+
+
+def main():
+    """CLI entry point."""
+    run_validation()
     # Exit with success - the script completed its job regardless of whether
     # any predictions were validated. Having no predictions to validate is
     # a normal state (e.g., first deployment, all caught up, recent predictions).

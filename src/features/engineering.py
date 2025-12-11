@@ -258,7 +258,8 @@ class FeatureEngineer:
         self,
         df: pd.DataFrame,
         timestamp_col: str = 'created_at',
-        additional_regressors: Optional[List[str]] = None
+        additional_regressors: Optional[List[str]] = None,
+        resample_freq: str = 'H'
     ) -> pd.DataFrame:
         """
         Prepare features for Prophet model.
@@ -274,20 +275,39 @@ class FeatureEngineer:
             additional_regressors: List of feature names to use as regressors
 
         Returns:
-            DataFrame formatted for Prophet
+            DataFrame formatted for Prophet with resampled posting intensity
         """
-        prophet_df = pd.DataFrame({
-            'ds': df[timestamp_col],
-            'y': 1  # Binary: post happened
-        })
+        if df.empty:
+            return pd.DataFrame(columns=['ds', 'y'])
 
-        # Add additional regressors if specified
+        working_df = df.copy()
+        working_df[timestamp_col] = pd.to_datetime(working_df[timestamp_col], utc=True, errors='coerce')
+        working_df = working_df.dropna(subset=[timestamp_col])
+        working_df[timestamp_col] = working_df[timestamp_col].dt.tz_convert(None)
+        working_df = working_df.sort_values(timestamp_col).set_index(timestamp_col)
+
+        # Count posts per interval to form y
+        event_counts = working_df.resample(resample_freq).size().rename('y').astype(float)
+
+        # Aggregate numeric regressors over the same grid
+        numeric_cols = working_df.select_dtypes(include=[np.number]).columns
+        aggregated = working_df[numeric_cols].resample(resample_freq).mean()
+
+        prophet_df = aggregated.join(event_counts, how='outer')
+        prophet_df['y'] = prophet_df['y'].fillna(0)
+
+        # Ensure requested regressors exist
         if additional_regressors:
             for regressor in additional_regressors:
-                if regressor in df.columns:
-                    prophet_df[regressor] = df[regressor]
-                else:
-                    logger.warning(f"Regressor '{regressor}' not found in DataFrame")
+                if regressor not in prophet_df.columns:
+                    if regressor in working_df.columns and regressor not in numeric_cols:
+                        # Non-numeric columns (e.g., categorical) - attempt forward fill of mode encoded as int
+                        prophet_df[regressor] = working_df[regressor].resample(resample_freq).ffill().reindex(prophet_df.index)
+                    else:
+                        prophet_df[regressor] = 0.0
+
+        prophet_df = prophet_df.ffill().fillna(0)
+        prophet_df = prophet_df.reset_index().rename(columns={timestamp_col: 'ds'})
 
         return prophet_df
 

@@ -9,7 +9,8 @@ cmdstanpy==1.2.2  # Required backend for Prophet
 torch==2.1.2  # For Neural Temporal Point Process (NTPP)
 
 # Content Model
-anthropic>=0.40.0  # Updated SDK with better compatibility
+anthropic>=0.45.2  # Updated SDK with httpx 0.28+ compatibility fix
+httpx>=0.28.0  # Required for anthropic SDK compatibility
 
 # API & Web
 fastapi==0.109.0

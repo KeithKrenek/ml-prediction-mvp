@@ -26,6 +26,7 @@ import yaml
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.database import get_session, Post
 from features.engineering import FeatureEngineer
+from models.timing_model import TimingPredictor
 
 # Import model implementations
 try:
@@ -72,6 +73,8 @@ class UnifiedTimingPredictor:
         self.model = None
         self.last_trained = None
         self.feature_cols = []
+        self.prophet_engine = TimingPredictor(config_path=config_path)
+        self.active_model_type = self.model_type
 
         logger.info(f"UnifiedTimingPredictor initialized with model_type='{self.model_type}'")
 
@@ -116,6 +119,54 @@ class UnifiedTimingPredictor:
         logger.info(f"Loaded {len(df)} posts from {df['created_at'].min()} to {df['created_at'].max()}")
 
         return df
+
+    def _get_context_snapshot(self, reference_time=None):
+        """Load the closest context snapshot for feature enrichment."""
+        from data.database import ContextSnapshot  # Local import to avoid circular deps
+        session = get_session()
+        try:
+            query = session.query(ContextSnapshot).order_by(ContextSnapshot.captured_at.desc())
+            if reference_time is not None:
+                query = query.filter(ContextSnapshot.captured_at <= reference_time).order_by(ContextSnapshot.captured_at.desc())
+            snapshot = query.first()
+            if not snapshot:
+                return None
+            return {
+                'top_headlines': snapshot.top_headlines,
+                'political_news': snapshot.political_news,
+                'news_summary': snapshot.news_summary,
+                'trending_topics': snapshot.trending_topics,
+                'trending_keywords': snapshot.trending_keywords,
+                'trend_categories': snapshot.trend_categories,
+                'market_sentiment': snapshot.market_sentiment,
+                'sp500_change_pct': snapshot.sp500_change_pct,
+                'dow_change_pct': snapshot.dow_change_pct,
+                'completeness_score': snapshot.completeness_score,
+                'freshness_score': snapshot.freshness_score
+            }
+        finally:
+            session.close()
+
+    def _auto_select_model_type(self, df: pd.DataFrame) -> str:
+        """Determine which model to use based on recent posting rate."""
+        if df is None or df.empty:
+            return 'prophet'
+        df_sorted = df.sort_values('created_at')
+        window_start = df_sorted['created_at'].max() - timedelta(days=3)
+        recent = df_sorted[df_sorted['created_at'] >= window_start]
+        if recent.empty:
+            recent = df_sorted
+        duration_days = max((recent['created_at'].max() - recent['created_at'].min()).total_seconds() / 86400, 1)
+        posts_per_day = len(recent) / duration_days
+        threshold = self.config.get('auto_switch_threshold', 12)
+        selected = 'ntpp' if posts_per_day >= threshold else 'prophet'
+        logger.info(
+            "Auto-selected timing model: %s (%.1f posts/day, threshold=%s)",
+            selected.upper(),
+            posts_per_day,
+            threshold
+        )
+        return selected
 
     def prepare_features(
         self,
@@ -170,73 +221,26 @@ class UnifiedTimingPredictor:
             logger.error("Insufficient data for training!")
             return False
 
-        # Engineer features
-        features_df = self.prepare_features(df, context)
+        if self.model_type == 'auto':
+            self.active_model_type = self._auto_select_model_type(df)
+        else:
+            self.active_model_type = self.model_type
 
-        if self.model_type == 'prophet':
-            return self._train_prophet(features_df, **kwargs)
-        elif self.model_type == 'ntpp':
-            return self._train_ntpp(features_df, **kwargs)
+        if self.active_model_type == 'prophet':
+            trained = self.prophet_engine.train(df=df)
+            if trained:
+                self.model = self.prophet_engine
+                self.last_trained = self.prophet_engine.last_trained
+            return trained
+        elif self.active_model_type == 'ntpp':
+            context = context or self._get_context_snapshot(df['created_at'].max())
+            features_df = self.prepare_features(df, context)
+            trained = self._train_ntpp(features_df, **kwargs)
+            if trained:
+                self.last_trained = datetime.now()
+            return trained
         else:
             raise ValueError(f"Unknown model type: {self.model_type}")
-
-    def _train_prophet(
-        self,
-        features_df: pd.DataFrame,
-        **kwargs
-    ) -> bool:
-        """Train Prophet model."""
-        if Prophet is None:
-            logger.error("Prophet not available!")
-            return False
-
-        # Get regressors from config
-        feature_config = self.config.get('feature_engineering', {})
-        prophet_regressors = feature_config.get('prophet_regressors', [
-            'hour_sin', 'hour_cos',
-            'is_weekend',
-            'engagement_total',
-            'time_since_last_hours',
-            'posts_last_1h',
-            'is_burst_post'
-        ])
-
-        # Prepare Prophet DataFrame
-        prophet_df = self.feature_engineer.prepare_for_prophet(
-            features_df,
-            timestamp_col='created_at',
-            additional_regressors=prophet_regressors
-        )
-
-        # Fill NaN values
-        for regressor in prophet_regressors:
-            if regressor in prophet_df.columns:
-                prophet_df[regressor] = prophet_df[regressor].fillna(0)
-
-        # Initialize Prophet
-        prophet_config = self.config.get('prophet', {})
-        self.model = Prophet(
-            daily_seasonality=prophet_config.get('daily_seasonality', True),
-            weekly_seasonality=prophet_config.get('weekly_seasonality', True),
-            yearly_seasonality=prophet_config.get('yearly_seasonality', False),
-            changepoint_prior_scale=prophet_config.get('changepoint_prior_scale', 0.05),
-            interval_width=prophet_config.get('interval_width', 0.95)
-        )
-
-        # Add regressors
-        for regressor in prophet_regressors:
-            if regressor in prophet_df.columns:
-                self.model.add_regressor(regressor)
-
-        # Train
-        logger.info(f"Training Prophet with {len(prophet_regressors)} regressors...")
-        self.model.fit(prophet_df)
-
-        self.last_trained = datetime.now()
-        self.feature_cols = prophet_regressors
-        logger.success("Prophet training complete!")
-
-        return True
 
     def _train_ntpp(
         self,
@@ -312,6 +316,9 @@ class UnifiedTimingPredictor:
         Returns:
             Prediction dict or None
         """
+        if self.active_model_type == 'prophet':
+            return self.prophet_engine.get_next_post_time()
+
         if self.model is None:
             logger.error("Model not trained!")
             return None
@@ -325,46 +332,10 @@ class UnifiedTimingPredictor:
         # Engineer features
         features_df = self.prepare_features(df, context)
 
-        if self.model_type == 'prophet':
-            return self._predict_prophet(features_df)
-        elif self.model_type == 'ntpp':
+        if self.active_model_type == 'ntpp':
             return self._predict_ntpp(features_df)
-        else:
-            raise ValueError(f"Unknown model type: {self.model_type}")
 
-    def _predict_prophet(self, features_df: pd.DataFrame) -> Optional[Dict]:
-        """Make prediction with Prophet."""
-        # Create future dataframe
-        future = self.model.make_future_dataframe(periods=48, freq='H')
-
-        # Add regressor values for future (use last known values)
-        for regressor in self.feature_cols:
-            if regressor in features_df.columns:
-                last_value = features_df[regressor].iloc[-1]
-                future[regressor] = last_value
-
-        # Predict
-        forecast = self.model.predict(future)
-
-        # Get predictions for future only
-        future_forecast = forecast[forecast['ds'] > features_df['created_at'].max()]
-
-        if len(future_forecast) == 0:
-            return None
-
-        # Find peak (most likely time)
-        peak_idx = future_forecast['yhat'].idxmax()
-        next_post = future_forecast.loc[peak_idx]
-
-        confidence = 1.0 - (next_post['yhat_upper'] - next_post['yhat_lower'])
-        confidence = max(0.0, min(1.0, confidence))
-
-        return {
-            'predicted_time': next_post['ds'],
-            'confidence': confidence,
-            'model_version': f'prophet_{self.model_type}_v1',
-            'trained_at': self.last_trained
-        }
+        raise ValueError(f"Unknown model type: {self.active_model_type}")
 
     def _predict_ntpp(self, features_df: pd.DataFrame) -> Optional[Dict]:
         """Make prediction with NTPP."""
@@ -380,16 +351,10 @@ class UnifiedTimingPredictor:
         """Save model to disk."""
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 
-        if self.model_type == 'prophet':
-            import pickle
-            with open(path, 'wb') as f:
-                pickle.dump({
-                    'model': self.model,
-                    'model_type': self.model_type,
-                    'feature_cols': self.feature_cols,
-                    'last_trained': self.last_trained
-                }, f)
-        elif self.model_type == 'ntpp':
+        target_type = self.active_model_type
+        if target_type == 'prophet':
+            self.prophet_engine.save(path)
+        elif target_type == 'ntpp':
             self.model.save(path)
 
         logger.success(f"Model saved to {path}")
@@ -397,14 +362,14 @@ class UnifiedTimingPredictor:
     def load(self, path: str) -> bool:
         """Load model from disk."""
         try:
-            if self.model_type == 'prophet':
-                import pickle
-                with open(path, 'rb') as f:
-                    data = pickle.load(f)
-                self.model = data['model']
-                self.feature_cols = data.get('feature_cols', [])
-                self.last_trained = data.get('last_trained')
-            elif self.model_type == 'ntpp':
+            target_type = self.active_model_type
+            if target_type == 'prophet':
+                loaded = self.prophet_engine.load(path)
+                if loaded:
+                    self.model = self.prophet_engine
+                    self.last_trained = self.prophet_engine.last_trained
+                return loaded
+            elif target_type == 'ntpp':
                 # Initialize model first
                 ntpp_config = self.config.get('neural_tpp', {})
                 device = 'cuda' if torch and torch.cuda.is_available() else 'cpu'

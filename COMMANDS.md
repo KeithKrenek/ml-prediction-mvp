@@ -71,6 +71,9 @@ python -c "from src.data.database import init_db; init_db(); print('✓ Database
 
 # Verify API key (without revealing it)
 python -c "import os; from dotenv import load_dotenv; load_dotenv(); print('✓ API key loaded' if os.getenv('ANTHROPIC_API_KEY') else '✗ API key missing')"
+
+# Run smoke test (imports + DB connectivity)
+python scripts/smoke_test.py
 ```
 
 ## Common Issues

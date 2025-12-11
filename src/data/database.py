@@ -121,6 +121,24 @@ class DataCollectionLog(Base):
         return f"<Collection {self.source} at {self.collected_at}: {self.status}>"
 
 
+class CronRunLog(Base):
+    """Track cron job executions and metrics"""
+    __tablename__ = 'cron_run_log'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    job_name = Column(String, index=True)
+    started_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+    completed_at = Column(DateTime)
+    status = Column(String, default='running')  # running, success, failed
+    records_processed = Column(Integer, default=0)
+    api_calls = Column(Integer, default=0)
+    error_message = Column(Text)
+    extra_metadata = Column(JSON)
+
+    def __repr__(self):
+        return f"<CronRunLog {self.job_name} {self.status} at {self.started_at}>"
+
+
 class ModelVersion(Base):
     """Track all model versions and their metadata"""
     __tablename__ = 'model_versions'

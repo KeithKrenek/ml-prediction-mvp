@@ -5,11 +5,12 @@ Simple, effective MVP that can be replaced with fine-tuned models later.
 
 import os
 import sys
-import random
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from loguru import logger
 import yaml
 from anthropic import Anthropic
+
+from src.validation.similarity_metrics import SimilarityMetrics
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +26,7 @@ class ContentGenerator:
     """
     
     def __init__(self, config_path="config/config.yaml", api_key=None):
+        self.config_path = config_path
         self.config = self._load_config(config_path)
         
         # Initialize Claude client
@@ -37,6 +39,10 @@ class ContentGenerator:
         
         self.example_posts = []
         self.model_version = "claude_few_shot_v1"
+        self.similarity_metrics = self._init_similarity_metrics()
+        claude_cfg = self.config.get('claude_api', {})
+        self.max_calls_per_hour = claude_cfg.get('max_calls_per_hour')
+        self.call_history = []
     
     def _load_config(self, config_path):
         """Load configuration"""
@@ -55,9 +61,65 @@ class ContentGenerator:
                     'num_examples': 10
                 }
             }
+
+    def _load_similarity_config(self):
+        """Load similarity metric configuration from validation settings."""
+        try:
+            with open(self.config_path, 'r') as f:
+                full_config = yaml.safe_load(f)
+            return full_config.get('validation', {}).get('similarity_metrics', {})
+        except Exception as exc:
+            logger.warning(f"Could not load similarity config: {exc}")
+            return {}
+
+    def _init_similarity_metrics(self):
+        """Initialise SimilarityMetrics helper if dependencies are available."""
+        similarity_cfg = self._load_similarity_config()
+        try:
+            return SimilarityMetrics(
+                weights=similarity_cfg.get('weights'),
+                use_bertscore=similarity_cfg.get('use_bertscore', True),
+                use_sentence_embeddings=similarity_cfg.get('use_sentence_embeddings', True),
+                use_entity_matching=similarity_cfg.get('use_entity_matching', True),
+                bertscore_model=similarity_cfg.get('bertscore_model', "microsoft/deberta-xlarge-mnli")
+            )
+        except Exception as exc:
+            logger.warning(f"Similarity metrics unavailable: {exc}")
+            return None
+
+    def _within_call_budget(self) -> bool:
+        """Return True if it's safe to call the Anthropic API."""
+        if not self.max_calls_per_hour:
+            return True
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+        self.call_history = [ts for ts in self.call_history if ts >= cutoff]
+        return len(self.call_history) < self.max_calls_per_hour
+
+    def _record_call(self):
+        if self.max_calls_per_hour:
+            self.call_history.append(datetime.now(timezone.utc))
+
+    def _fallback_content(self, predicted_time):
+        """Return a low-confidence fallback when rate limit is hit."""
+        if not self.example_posts:
+            self.load_example_posts()
+        sample_text = "Big updates coming soon. Stay tuned!"
+        if self.example_posts:
+            sample_text = self.example_posts[0]['content']
+
+        return {
+            'content': f"[Rate-limit fallback] {sample_text}",
+            'model_version': self.model_version,
+            'confidence': 0.2,
+            'generated_at': datetime.now(),
+            'context_used': False,
+            'similarity_metrics': {},
+            'rate_limit_hit': True,
+            'predicted_time_hint': predicted_time.isoformat() if predicted_time else None
+        }
     
-    def load_example_posts(self, num_examples=None):
-        """Load example posts for few-shot prompting"""
+    def load_example_posts(self, num_examples=None, context=None):
+        """Load example posts for few-shot prompting using simple retrieval."""
         if num_examples is None:
             num_examples = self.config.get('claude_api', {}).get('num_examples', 10)
         
@@ -79,16 +141,46 @@ class ContentGenerator:
             logger.warning("No posts found in database!")
             return []
         
-        # Sample diverse posts (different lengths, engagement)
-        sampled = random.sample(posts, min(num_examples, len(posts)))
+        trending_terms = set()
+        if context and context.get('trending_keywords'):
+            trending_terms = {term.lower() for term in context.get('trending_keywords', [])}
+        max_engagement = max(
+            (p.favourites_count or 0) + (p.reblogs_count or 0) + (p.replies_count or 0)
+            for p in posts
+        ) or 1
+        now = datetime.now(timezone.utc)
+
+        scored_posts = []
+        for post in posts:
+            engagement = (post.favourites_count or 0) + (post.reblogs_count or 0) + (post.replies_count or 0)
+            engagement_score = engagement / max_engagement
+
+            keyword_score = 0.0
+            if trending_terms:
+                content_lower = (post.content or "").lower()
+                matches = sum(1 for term in trending_terms if term in content_lower)
+                keyword_score = matches / max(len(trending_terms), 1)
+
+            created_at = post.created_at or now
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            recency_hours = max((now - created_at).total_seconds() / 3600, 0.1)
+            recency_score = 1 / (1 + recency_hours / 12)
+
+            score = 0.6 * engagement_score + 0.25 * keyword_score + 0.15 * recency_score
+            scored_posts.append((score, post))
+
+        scored_posts.sort(key=lambda item: item[0], reverse=True)
+        top_posts = [post for _, post in scored_posts[:num_examples]]
         
         self.example_posts = [
             {
                 'content': p.content,
                 'created_at': p.created_at,
-                'engagement': p.favourites_count + p.reblogs_count
+                'engagement': (p.favourites_count or 0) + (p.reblogs_count or 0),
+                'score': score
             }
-            for p in sampled
+            for score, p in scored_posts[:num_examples]
         ]
         
         logger.info(f"Loaded {len(self.example_posts)} example posts")
@@ -119,6 +211,10 @@ class ContentGenerator:
         if self.client is None:
             logger.error("Claude client not initialized!")
             return None
+
+        if not self._within_call_budget():
+            logger.warning("Anthropic call budget reached; reusing cached content instead of calling API")
+            return self._fallback_content(predicted_time)
         
         # Prepare context information
         time_context = ""
@@ -150,6 +246,8 @@ class ContentGenerator:
                 market_context = f"Market: {sentiment} (S&P {sp_change:+.1f}%)"
 
         # Build few-shot prompt with enhanced context
+        if not self.example_posts:
+            self.load_example_posts(context=context)
         examples = self.format_examples()
 
         context_section = "\n".join(filter(None, [time_context, news_context, trending_context, market_context]))
@@ -181,17 +279,37 @@ Generated post:"""
             )
             
             generated_content = message.content[0].text.strip()
+            self._record_call()
             
             # Remove quotes if present
             if generated_content.startswith('"') and generated_content.endswith('"'):
                 generated_content = generated_content[1:-1]
+
+            content_confidence = 0.5
+            similarity_details = {}
+            if self.similarity_metrics and self.example_posts:
+                try:
+                    similarity_scores = []
+                    for example in self.example_posts:
+                        metrics = self.similarity_metrics.calculate_all_metrics(
+                            generated_content,
+                            example['content']
+                        )
+                        similarity_scores.append(metrics)
+                    if similarity_scores:
+                        best_metrics = max(similarity_scores, key=lambda m: m['composite_similarity'])
+                        content_confidence = best_metrics['composite_similarity']
+                        similarity_details = best_metrics
+                except Exception as similarity_exc:
+                    logger.warning(f"Failed to score generated content: {similarity_exc}")
             
             result = {
                 'content': generated_content,
                 'model_version': self.model_version,
-                'confidence': 0.7,  # Placeholder confidence score
+                'confidence': content_confidence,
                 'generated_at': datetime.now(),
-                'context_used': bool(context)
+                'context_used': bool(context),
+                'similarity_metrics': similarity_details
             }
             
             logger.info(f"Generated content: {generated_content[:100]}...")

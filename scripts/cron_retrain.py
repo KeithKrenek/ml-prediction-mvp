@@ -41,6 +41,8 @@ logger.add(
 from scripts.retrain_models import main as retrain_main
 from src.data.database import get_session, ModelVersion
 from src.models.model_registry import ModelRegistry
+from src.utils.run_log import CronRunLogger
+from src.utils.alerts import get_alert_manager
 
 
 def should_retrain(model_type: str, min_days_between: int = 7) -> bool:
@@ -69,7 +71,11 @@ def should_retrain(model_type: str, min_days_between: int = 7) -> bool:
             return True
 
         # Check time since last training
-        days_since_training = (datetime.now(timezone.utc) - latest_model.trained_at).days
+        # Ensure trained_at is timezone-aware (SQLAlchemy may return naive datetime)
+        trained_at = latest_model.trained_at
+        if trained_at.tzinfo is None:
+            trained_at = trained_at.replace(tzinfo=timezone.utc)
+        days_since_training = (datetime.now(timezone.utc) - trained_at).days
 
         logger.info(f"{model_type.title()} model last trained {days_since_training} days ago")
 
@@ -93,46 +99,57 @@ def main_cron():
     logger.info(f"Execution time: {start_time}")
     logger.info("="*60)
 
+    exit_code = 0
+    alert_manager = get_alert_manager()
+
     try:
-        # Check if API key is configured
-        anthropic_key = os.getenv('ANTHROPIC_API_KEY')
-        if not anthropic_key or anthropic_key == 'your_anthropic_api_key_here':
-            logger.warning("ANTHROPIC_API_KEY not configured - content model will not be updated")
+        with CronRunLogger("retrain") as run_log:
+            anthropic_key = os.getenv('ANTHROPIC_API_KEY')
+            if not anthropic_key or anthropic_key == 'your_anthropic_api_key_here':
+                logger.warning("ANTHROPIC_API_KEY not configured - content model will not be updated")
 
-        # Check if retraining is due
-        timing_due = should_retrain('timing', min_days_between=7)
-        content_due = should_retrain('content', min_days_between=7)
+            timing_due = should_retrain('timing', min_days_between=7)
+            content_due = should_retrain('content', min_days_between=7)
 
-        if not timing_due and not content_due:
-            logger.info("No retraining needed at this time")
+            if not timing_due and not content_due:
+                logger.info("No retraining needed at this time")
+                logger.info("="*60)
+                run_log.update(
+                    extra_metadata={
+                        'skipped': True,
+                        'timing_due': timing_due,
+                        'content_due': content_due
+                    }
+                )
+                return
+
+            logger.info("Starting retraining process...")
             logger.info("="*60)
-            sys.exit(0)
 
-        # Run retraining
-        logger.info("Starting retraining process...")
-        logger.info("="*60)
+            retrain_main()
 
-        # Call main retraining function
-        retrain_main()
+            duration = (datetime.now() - start_time).total_seconds()
 
-        # Calculate duration
-        duration = (datetime.now() - start_time).total_seconds()
+            logger.info("="*60)
+            logger.success("Retraining cron job completed successfully!")
+            logger.info(f"Duration: {duration:.2f} seconds")
+            logger.info("="*60)
 
-        # Log results
-        logger.info("="*60)
-        logger.success("Retraining cron job completed successfully!")
-        logger.info(f"Duration: {duration:.2f} seconds")
-        logger.info("="*60)
-
-        # Exit with success code
-        sys.exit(0)
+            run_log.update(
+                extra_metadata={
+                    'duration_seconds': duration,
+                    'timing_due': timing_due,
+                    'content_due': content_due
+                }
+            )
 
     except Exception as e:
+        exit_code = 1
         logger.error(f"Retraining cron job failed: {e}")
         logger.exception("Full traceback:")
+        alert_manager.check_cron_failures("retrain")
 
-        # Exit with error code
-        sys.exit(1)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

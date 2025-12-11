@@ -37,7 +37,9 @@ logger.add(
     level="INFO"
 )
 
-from scripts.validate_predictions import main as validate_main
+from scripts.validate_predictions import run_validation
+from src.utils.run_log import CronRunLogger
+from src.utils.alerts import get_alert_manager
 
 
 def main_cron():
@@ -49,32 +51,42 @@ def main_cron():
     logger.info(f"Execution time: {start_time}")
     logger.info("="*60)
 
+    exit_code = 0
+    alert_manager = get_alert_manager()
+
     try:
-        # Run validation
-        logger.info("Starting prediction validation...")
-        logger.info("="*60)
+        with CronRunLogger("validate") as run_log:
+            logger.info("Starting prediction validation...")
+            logger.info("="*60)
 
-        # Call main validation function
-        validate_main()
+            summary, duration = run_validation()
 
-        # Calculate duration
-        duration = (datetime.now() - start_time).total_seconds()
+            logger.info("="*60)
+            logger.success("Validation cron job completed successfully!")
+            logger.info(f"Duration: {duration:.2f} seconds")
+            logger.info("="*60)
 
-        # Log results
-        logger.info("="*60)
-        logger.success("Validation cron job completed successfully!")
-        logger.info(f"Duration: {duration:.2f} seconds")
-        logger.info("="*60)
-
-        # Exit with success code
-        sys.exit(0)
-
+            run_log.update(
+                records_processed=summary.get('validated', 0),
+                extra_metadata={
+                    'duration_seconds': duration,
+                    'matched': summary.get('matched', 0),
+                    'correct': summary.get('correct', 0),
+                    'accuracy': summary.get('accuracy')
+                }
+            )
+            if summary.get('matched'):
+                alert_manager.check_accuracy_threshold(
+                    summary.get('accuracy'),
+                    {'matched': summary.get('matched'), 'correct': summary.get('correct')}
+                )
     except Exception as e:
+        exit_code = 1
         logger.error(f"Validation cron job failed: {e}")
         logger.exception("Full traceback:")
+        alert_manager.check_cron_failures("validate")
 
-        # Exit with error code
-        sys.exit(1)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

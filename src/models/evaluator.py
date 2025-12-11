@@ -212,6 +212,56 @@ class ModelEvaluator:
 
         return metrics
 
+    def summarize_timing_predictions(
+        self,
+        predictions: List[Dict],
+        actuals: List[Dict]
+    ) -> Dict:
+        """
+        Compute timing metrics from matched prediction/actual pairs.
+
+        Args:
+            predictions: List of dicts with 'predicted_time'
+            actuals: List of dicts with 'actual_time'
+
+        Returns:
+            Dict with MAE and within-window accuracy metrics.
+        """
+        paired_errors = []
+        for pred, actual in zip(predictions, actuals):
+            pred_time = pred.get('predicted_time')
+            actual_time = actual.get('actual_time')
+            if pred_time is None or actual_time is None:
+                continue
+            if not isinstance(pred_time, pd.Timestamp):
+                pred_time = pd.to_datetime(pred_time)
+            if not isinstance(actual_time, pd.Timestamp):
+                actual_time = pd.to_datetime(actual_time)
+            if getattr(pred_time, 'tzinfo', None):
+                pred_time = pred_time.tz_convert(None)
+            if getattr(actual_time, 'tzinfo', None):
+                actual_time = actual_time.tz_convert(None)
+            paired_errors.append(abs((pred_time - actual_time).total_seconds()) / 3600)
+
+        if not paired_errors:
+            return {
+                'mae_hours': None,
+                'within_6h_accuracy': 0,
+                'within_24h_accuracy': 0,
+                'num_predictions': 0
+            }
+
+        mae = float(np.mean(paired_errors))
+        within_6h = sum(1 for e in paired_errors if e <= 6) / len(paired_errors)
+        within_24h = sum(1 for e in paired_errors if e <= 24) / len(paired_errors)
+
+        return {
+            'mae_hours': mae,
+            'within_6h_accuracy': within_6h,
+            'within_24h_accuracy': within_24h,
+            'num_predictions': len(paired_errors)
+        }
+
     def evaluate_content_model(
         self,
         generator,

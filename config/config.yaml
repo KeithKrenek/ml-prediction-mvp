@@ -48,6 +48,7 @@ content_model:
     max_tokens: 280
     temperature: 0.8
     num_examples: 10  # Number of example posts in few-shot prompt
+    max_calls_per_hour: 50  # Soft budget for Anthropic API usage
   
   # For future fine-tuned models
   finetuned:
@@ -229,6 +230,12 @@ context_integration:
   # Stock Market Data (yfinance)
   market_data_enabled: true
 
+  # Per-source rate limits (minutes)
+  rate_limits:
+    news_minutes: 30
+    trends_minutes: 60
+    market_minutes: 15
+
   # RSS Feeds (fallback for news)
   rss_feeds_enabled: true
   rss_feeds:
@@ -255,3 +262,12 @@ logging:
   format: "{time} | {level} | {message}"
   rotation: "500 MB"
   retention: "10 days"
+
+# Monitoring & Alerts
+monitoring:
+  cron_alerts:
+    max_consecutive_failures: 3
+    window_minutes: 120
+  accuracy_threshold:
+    minimum_accuracy: 0.5  # Trigger alert if validation accuracy falls below this
+  alert_channel: "log"  # For now, logs; can be slack/email later

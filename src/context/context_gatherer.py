@@ -123,6 +123,8 @@ class RealTimeContextGatherer:
         # Initialize cache
         cache_ttl = self.config.get('cache_ttl_minutes', 30)
         self.cache = ContextCache(ttl_minutes=cache_ttl)
+        self.rate_limits = self.config.get('rate_limits', {})
+        self.last_fetch_times = {}
 
         # Initialize API clients
         self._init_api_clients()
@@ -177,6 +179,20 @@ class RealTimeContextGatherer:
         # feedparser is used directly, no client initialization needed
         self.rss_enabled = FEEDPARSER_AVAILABLE and self.config.get('rss_feeds_enabled', True)
 
+    def _rate_limited(self, source: str) -> bool:
+        """Return True if the given source should be throttled."""
+        minutes = self.rate_limits.get(f"{source}_minutes")
+        if not minutes:
+            return False
+        last_fetch = self.last_fetch_times.get(source)
+        if last_fetch and (datetime.now() - last_fetch).total_seconds() < minutes * 60:
+            logger.info(f"Rate limit active for {source}; reusing cached data when possible")
+            return True
+        return False
+
+    def _mark_fetch(self, source: str):
+        self.last_fetch_times[source] = datetime.now()
+
     def get_news_headlines(self, max_articles=10) -> Dict:
         """
         Fetch recent news headlines.
@@ -190,7 +206,12 @@ class RealTimeContextGatherer:
         # Check cache first
         cached = self.cache.get('news_headlines')
         if cached:
+            if self._rate_limited('news'):
+                logger.info("Returning cached news headlines due to rate limit")
             return cached
+
+        if self._rate_limited('news'):
+            logger.info("News rate limit active but cache expired; refreshing data once")
 
         headlines_data = {
             'top_headlines': [],
@@ -262,6 +283,7 @@ class RealTimeContextGatherer:
 
         # Cache the result
         self.cache.set('news_headlines', headlines_data)
+        self._mark_fetch('news')
 
         return headlines_data
 
@@ -323,7 +345,12 @@ class RealTimeContextGatherer:
         # Check cache
         cached = self.cache.get('trending_topics')
         if cached:
+            if self._rate_limited('trends'):
+                logger.info("Returning cached trending topics due to rate limit")
             return cached
+
+        if self._rate_limited('trends'):
+            logger.info("Trends rate limit active but cache expired; refreshing data once")
 
         trending_data = {
             'trending_topics': [],
@@ -376,6 +403,7 @@ class RealTimeContextGatherer:
 
         # Cache the result
         self.cache.set('trending_topics', trending_data)
+        self._mark_fetch('trends')
 
         return trending_data
 
@@ -389,7 +417,12 @@ class RealTimeContextGatherer:
         # Check cache
         cached = self.cache.get('market_data')
         if cached:
+            if self._rate_limited('market'):
+                logger.info("Returning cached market data due to rate limit")
             return cached
+
+        if self._rate_limited('market'):
+            logger.info("Market rate limit active but cache expired; refreshing data once")
 
         market_data = {
             'sp500_value': None,
@@ -467,6 +500,7 @@ class RealTimeContextGatherer:
 
         # Cache the result
         self.cache.set('market_data', market_data)
+        self._mark_fetch('market')
 
         return market_data
 

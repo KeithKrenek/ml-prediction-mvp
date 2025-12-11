@@ -215,6 +215,17 @@ Upgrade to Teams ($250/month) or self-host.
 # Create .github/workflows/retrain.yml
 ```
 
+### Smoke Test Before Scaling
+
+- Run `python scripts/smoke_test.py` locally (and rely on the GitHub Actions workflow) before deploying pricier cron schedules.
+- Confirms imports, DB connectivity, and predictor initialization without hitting external APIs.
+
+### New Cron Health Endpoint
+
+- Use `https://trump-prediction-api.onrender.com/health/cron` to monitor cron job success/failure counts before scaling up.
+- The Streamlit dashboard now includes a **Cron Activity** section fed from the same telemetry (Neon table `cron_run_log`).
+- Configure UptimeRobot/Better Uptime to alert if cron success rate drops or consecutive failures exceed the configured threshold (`monitoring.cron_alerts` in `config/config.yaml`).
+
 ---
 
 ## Part 6: Continuous Deployment

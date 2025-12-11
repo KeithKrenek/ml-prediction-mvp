@@ -15,8 +15,11 @@ import yaml
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from data.database import get_session, Post
+from data.database import get_session, Post, ContextSnapshot
 from features.engineering import FeatureEngineer
+from models.evaluator import ModelEvaluator
+from models.model_registry import ModelRegistry
+
 
 try:
     from prophet import Prophet
@@ -40,6 +43,9 @@ class TimingPredictor:
         self.features_df = None
         self.feature_engineer = None
         self.enabled_regressors = []
+        self.residual_stats = {'mae': None, 'std': None}
+        self.latest_context_features = {}
+        self.registry = ModelRegistry()
         
     def _load_config(self, config_path):
         """Load configuration"""
@@ -134,21 +140,97 @@ class TimingPredictor:
             'is_burst_post'
         ])
 
-        # Prepare Prophet DataFrame
-        prophet_df = self.feature_engineer.prepare_for_prophet(
-            features_df,
-            timestamp_col='created_at',
-            additional_regressors=self.enabled_regressors
-        )
-
-        # Fill any NaN values in regressors
-        for regressor in self.enabled_regressors:
-            if regressor in prophet_df.columns:
-                prophet_df[regressor] = prophet_df[regressor].fillna(0)
-
         logger.info(f"Prepared features with {len(self.enabled_regressors)} regressors: {self.enabled_regressors[:5]}...")
 
-        return prophet_df
+        return features_df
+
+    def _get_context_snapshot(self, reference_time=None):
+        """Fetch the most recent context snapshot relative to the reference time."""
+        session = get_session()
+        try:
+            query = session.query(ContextSnapshot).order_by(ContextSnapshot.captured_at.desc())
+            if reference_time is not None:
+                query = query.filter(ContextSnapshot.captured_at <= reference_time).order_by(ContextSnapshot.captured_at.desc())
+            snapshot = query.first()
+            if not snapshot:
+                return None
+
+            return {
+                'top_headlines': snapshot.top_headlines,
+                'political_news': snapshot.political_news,
+                'news_summary': snapshot.news_summary,
+                'trending_topics': snapshot.trending_topics,
+                'trending_keywords': snapshot.trending_keywords,
+                'trend_categories': snapshot.trend_categories,
+                'market_sentiment': snapshot.market_sentiment,
+                'sp500_change_pct': snapshot.sp500_change_pct,
+                'dow_change_pct': snapshot.dow_change_pct,
+                'completeness_score': snapshot.completeness_score,
+                'freshness_score': snapshot.freshness_score
+            }
+        finally:
+            session.close()
+
+    def _compute_residual_stats(self):
+        """Calibrate residual distribution for confidence scoring."""
+        if self.model is None or self.features_df is None or self.features_df.empty:
+            self.residual_stats = {'mae': None, 'std': None}
+            return
+
+        regressors = [reg for reg in self.enabled_regressors if reg in self.features_df.columns]
+        history = self.features_df[['ds', 'y'] + regressors]
+        forecast = self.model.predict(history[['ds'] + regressors])
+        residuals = history['y'] - forecast['yhat']
+        mae = float(np.mean(np.abs(residuals))) if len(residuals) else None
+        std = float(np.std(residuals)) if len(residuals) else None
+        self.residual_stats = {'mae': mae, 'std': std}
+
+    def _extract_context_features(self, context_snapshot):
+        """Convert a context snapshot into feature columns."""
+        if context_snapshot is None or self.feature_engineer is None:
+            return {}
+        extractor = getattr(self.feature_engineer, 'context_extractor', None)
+        if extractor is None:
+            return {}
+        try:
+            return extractor.extract_from_context_snapshot(context_snapshot)
+        except Exception as exc:
+            logger.warning(f"Failed to extract context features: {exc}")
+            return {}
+
+    def _add_future_regressors(self, future_df, context_features=None):
+        """Ensure future dataframe contains all regressors."""
+        if not self.enabled_regressors:
+            return future_df
+
+        ds_series = future_df['ds']
+        hours = ds_series.dt.hour
+        days = ds_series.dt.dayofweek
+
+        for regressor in self.enabled_regressors:
+            if regressor in future_df.columns:
+                continue
+            if regressor == 'hour_sin':
+                future_df[regressor] = np.sin(2 * np.pi * hours / 24)
+            elif regressor == 'hour_cos':
+                future_df[regressor] = np.cos(2 * np.pi * hours / 24)
+            elif regressor == 'day_of_week_sin':
+                future_df[regressor] = np.sin(2 * np.pi * days / 7)
+            elif regressor == 'day_of_week_cos':
+                future_df[regressor] = np.cos(2 * np.pi * days / 7)
+            elif regressor == 'is_weekend':
+                future_df[regressor] = (days >= 5).astype(int)
+            elif regressor == 'is_business_hours':
+                future_df[regressor] = ((hours >= 9) & (hours <= 17) & (days < 5)).astype(int)
+            else:
+                if context_features and regressor in context_features:
+                    future_df[regressor] = context_features[regressor]
+                elif self.features_df is not None and regressor in self.features_df.columns:
+                    future_df[regressor] = self.features_df[regressor].iloc[-1]
+                else:
+                    future_df[regressor] = 0.0
+
+        return future_df
     
     def train(self, df=None):
         """Train Prophet model on historical data"""
@@ -162,7 +244,19 @@ class TimingPredictor:
             return False
         
         # Prepare features
-        prophet_df = self.prepare_features(df)
+        context_snapshot = self._get_context_snapshot(df['created_at'].max() if 'created_at' in df.columns else None)
+        resample_freq = self.config.get('prophet', {}).get('resample_freq', 'H')
+        features_df = self.prepare_features(df, context=context_snapshot)
+        self.latest_context_features = self._extract_context_features(context_snapshot)
+        prophet_df = self.feature_engineer.prepare_for_prophet(
+            features_df,
+            timestamp_col='created_at',
+            additional_regressors=self.enabled_regressors or None,
+            resample_freq=resample_freq
+        )
+        for regressor in self.enabled_regressors:
+            if regressor in prophet_df.columns:
+                prophet_df[regressor] = prophet_df[regressor].fillna(method='ffill').fillna(0)
         self.features_df = prophet_df
         
         # Initialize Prophet with configuration
@@ -184,10 +278,11 @@ class TimingPredictor:
         logger.info(f"Training Prophet with {len(self.enabled_regressors)} regressors...")
 
         # Fit model
-        logger.info(f"Training on {len(prophet_df)} posts...")
-        self.model.fit(prophet_df)
+        logger.info(f"Training on {len(prophet_df)} hourly points...")
+        self.model.fit(prophet_df[['ds', 'y'] + [reg for reg in self.enabled_regressors if reg in prophet_df.columns]])
         
         self.last_trained = datetime.now()
+        self._compute_residual_stats()
         logger.success("Model training complete!")
         
         return True
@@ -208,50 +303,18 @@ class TimingPredictor:
 
         # Create future dataframe
         future = self.model.make_future_dataframe(periods=periods_ahead, freq='H')
-
-        # Add regressor values to future dataframe
-        # Extract regressors from the model (they were added during training)
-        if hasattr(self, 'enabled_regressors') and self.enabled_regressors:
-            import numpy as np
-
-            # Add regressor values based on timestamp
-            for col in self.enabled_regressors:
-                if col in ['hour_sin', 'hour_cos']:
-                    # Cyclical hour encoding
-                    hours = future['ds'].dt.hour
-                    if col == 'hour_sin':
-                        future[col] = np.sin(2 * np.pi * hours / 24)
-                    else:
-                        future[col] = np.cos(2 * np.pi * hours / 24)
-
-                elif col in ['day_of_week_sin', 'day_of_week_cos']:
-                    # Cyclical day of week encoding
-                    dow = future['ds'].dt.dayofweek
-                    if col == 'day_of_week_sin':
-                        future[col] = np.sin(2 * np.pi * dow / 7)
-                    else:
-                        future[col] = np.cos(2 * np.pi * dow / 7)
-
-                elif col == 'is_weekend':
-                    future[col] = (future['ds'].dt.dayofweek >= 5).astype(int)
-
-                elif col == 'is_business_hours':
-                    hour = future['ds'].dt.hour
-                    dow = future['ds'].dt.dayofweek
-                    future[col] = ((hour >= 9) & (hour <= 17) & (dow < 5)).astype(int)
-
-                else:
-                    # For other regressors (engagement, historical patterns), use mean from training
-                    if col in self.features_df.columns:
-                        future[col] = self.features_df[col].mean()
-                    else:
-                        future[col] = 0.0
+        context_snapshot = self._get_context_snapshot()
+        context_features = self._extract_context_features(context_snapshot)
+        if not context_features:
+            context_features = self.latest_context_features
+        future = self._add_future_regressors(future, context_features=context_features)
 
         # Make predictions
         forecast = self.model.predict(future)
 
         # Get predictions for future only
-        future_forecast = forecast[forecast['ds'] > self.features_df['ds'].max()]
+        last_training_point = self.features_df['ds'].max() if self.features_df is not None else datetime.now()
+        future_forecast = forecast[forecast['ds'] > last_training_point]
 
         return future_forecast
     
@@ -271,9 +334,15 @@ class TimingPredictor:
         peak_idx = forecast['yhat'].idxmax()
         next_post = forecast.loc[peak_idx]
         
-        # Calculate confidence based on prediction interval width
-        confidence = 1.0 - (next_post['yhat_upper'] - next_post['yhat_lower'])
-        confidence = max(0.0, min(1.0, confidence))  # Clamp to [0, 1]
+        # Calibrated confidence using residual statistics
+        mae = self.residual_stats.get('mae') if self.residual_stats else None
+        interval_half_width = max(1e-6, (next_post['yhat_upper'] - next_post['yhat_lower']) / 2)
+        if mae is None or mae == 0:
+            confidence = 0.5
+        else:
+            uncertainty_ratio = interval_half_width / (mae + 1e-6)
+            confidence = 1 / (1 + uncertainty_ratio)
+        confidence = max(0.05, min(0.99, confidence))
         
         result = {
             'predicted_time': next_post['ds'],
@@ -288,47 +357,85 @@ class TimingPredictor:
         
         return result
     
-    def evaluate(self, test_df):
+    def evaluate(
+        self,
+        df=None,
+        min_train_size: int = 100,
+        step_size: int = 1,
+        max_evaluations: int = 25
+    ):
         """
-        Evaluate model performance on test data.
-        
+        Rolling-origin evaluation that retrains on expanding windows and
+        persists metrics to the model registry.
+
         Args:
-            test_df: DataFrame with actual post times
-            
+            df: Optional DataFrame with posts (defaults to DB data)
+            min_train_size: Minimum posts before starting evaluation
+            step_size: How many samples to skip between evaluations
+            max_evaluations: Max number of rolling forecasts
+
         Returns:
             dict with evaluation metrics
         """
-        # Calculate MAE and accuracy within time windows
+        if df is None:
+            df = self.load_data_from_db()
+        if df is None or len(df) <= min_train_size:
+            logger.warning("Not enough data to run evaluation")
+            return None
+
         predictions = []
         actuals = []
-        
-        for idx, row in test_df.iterrows():
-            # Predict based on data up to this point
-            # (In practice, you'd retrain on rolling window)
-            pred = self.get_next_post_time()
-            if pred:
-                predictions.append(pred['predicted_time'])
-                actuals.append(row['created_at'])
-        
+        evaluator = ModelEvaluator()
+
+        evaluation_indices = list(range(min_train_size, len(df), step_size))
+        for idx in evaluation_indices:
+            if len(predictions) >= max_evaluations or idx >= len(df):
+                break
+            train_slice = df.iloc[:idx].copy()
+            holdout_row = df.iloc[idx]
+
+            temp_model = TimingPredictor(config_path=self.config_path)
+            if not temp_model.train(df=train_slice):
+                continue
+            forecast = temp_model.get_next_post_time()
+            if not forecast:
+                continue
+
+            predictions.append({
+                'predicted_time': forecast['predicted_time'],
+                'confidence': forecast['confidence']
+            })
+            actuals.append({
+                'actual_time': holdout_row['created_at'],
+                'post_id': holdout_row['post_id']
+            })
+
         if not predictions:
+            logger.warning("Evaluation produced no predictions")
             return None
-        
-        # Calculate metrics
-        errors = [abs((p - a).total_seconds() / 3600) for p, a in zip(predictions, actuals)]
-        mae = np.mean(errors)
-        
-        within_6h = sum(1 for e in errors if e <= 6) / len(errors)
-        within_24h = sum(1 for e in errors if e <= 24) / len(errors)
-        
-        metrics = {
-            'mae_hours': mae,
-            'within_6h_accuracy': within_6h,
-            'within_24h_accuracy': within_24h,
-            'num_predictions': len(predictions)
-        }
-        
-        logger.info(f"Evaluation metrics: MAE={mae:.2f}h, 6h accuracy={within_6h:.2%}, 24h accuracy={within_24h:.2%}")
-        
+
+        metrics = evaluator.summarize_timing_predictions(predictions, actuals)
+        logger.info(
+            "Evaluation metrics: MAE=%.2fh | within_6h=%.1f%% | within_24h=%.1f%%",
+            metrics['mae_hours'],
+            metrics['within_6h_accuracy'] * 100,
+            metrics['within_24h_accuracy'] * 100
+        )
+
+        # Persist metrics via model registry if a production model exists
+        production_model = self.registry.get_production_model('timing')
+        if production_model:
+            try:
+                self.registry.evaluate_model(
+                    production_model.version_id,
+                    predictions,
+                    actuals,
+                    eval_dataset_start=df['created_at'].min(),
+                    eval_dataset_end=df['created_at'].max()
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to persist evaluation metrics: {exc}")
+
         return metrics
     
     def save(self, path="models/timing_model.pkl"):
@@ -340,7 +447,9 @@ class TimingPredictor:
                 'model': self.model,
                 'config': self.config,
                 'last_trained': self.last_trained,
-                'features_df': self.features_df
+                'features_df': self.features_df,
+                'residual_stats': self.residual_stats,
+                'latest_context_features': self.latest_context_features
             }, f)
         
         logger.success(f"Model saved to {path}")
@@ -355,6 +464,8 @@ class TimingPredictor:
             self.config = data['config']
             self.last_trained = data['last_trained']
             self.features_df = data['features_df']
+            self.residual_stats = data.get('residual_stats', {'mae': None, 'std': None})
+            self.latest_context_features = data.get('latest_context_features', {})
             
             logger.success(f"Model loaded from {path}")
             return True

@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 import os
 import sys
@@ -34,7 +34,16 @@ load_dotenv()
 
 # Import prediction system
 from src.predictor import TrumpPostPredictor
-from src.data.database import get_session, Prediction, Post, ModelVersion, TrainingRun, ModelEvaluation, ContextSnapshot
+from src.data.database import (
+    get_session,
+    Prediction,
+    Post,
+    ModelVersion,
+    TrainingRun,
+    ModelEvaluation,
+    ContextSnapshot,
+    CronRunLog,
+)
 from src.models.model_registry import ModelRegistry
 from src.validation.validator import PredictionValidator
 from src.context.context_gatherer import RealTimeContextGatherer
@@ -124,6 +133,17 @@ class HealthResponse(BaseModel):
     database_connected: bool
 
 
+class CronRunSummary(BaseModel):
+    """Summaries of cron job executions."""
+    job_name: str
+    status: str
+    started_at: datetime
+    completed_at: Optional[datetime]
+    records_processed: Optional[int] = None
+    api_calls: Optional[int] = None
+    extra_metadata: Optional[dict] = None
+
+
 class ModelStatus(BaseModel):
     """Model status information"""
     timing_model_loaded: bool
@@ -132,6 +152,21 @@ class ModelStatus(BaseModel):
     total_predictions_made: int
     last_post_time: Optional[datetime]
     last_prediction_time: Optional[datetime]
+    recent_cron_runs: List[CronRunSummary] = []
+
+
+class CronJobHealth(BaseModel):
+    job_name: str
+    last_run: Optional[datetime]
+    last_status: Optional[str]
+    consecutive_failures: int
+    runs_last_24h: int
+
+
+class CronHealthResponse(BaseModel):
+    jobs: List[CronJobHealth]
+    validation_accuracy: Optional[float]
+    total_validated: Optional[int]
 
 
 class SchedulerStatus(BaseModel):
@@ -383,6 +418,25 @@ async def get_status():
         # Get latest prediction
         latest_prediction = session.query(Prediction).order_by(Prediction.predicted_at.desc()).first()
         last_prediction_time = latest_prediction.predicted_at if latest_prediction else None
+
+        cron_runs = (
+            session.query(CronRunLog)
+            .order_by(CronRunLog.started_at.desc())
+            .limit(10)
+            .all()
+        )
+        recent_runs = [
+            CronRunSummary(
+                job_name=run.job_name,
+                status=run.status,
+                started_at=run.started_at,
+                completed_at=run.completed_at,
+                records_processed=run.records_processed,
+                api_calls=run.api_calls,
+                extra_metadata=run.extra_metadata,
+            )
+            for run in cron_runs
+        ]
         
         return {
             "timing_model_loaded": predictor is not None,
@@ -390,11 +444,74 @@ async def get_status():
             "total_posts_in_db": total_posts,
             "total_predictions_made": total_predictions,
             "last_post_time": last_post_time,
-            "last_prediction_time": last_prediction_time
+            "last_prediction_time": last_prediction_time,
+            "recent_cron_runs": recent_runs,
         }
     
     finally:
         session.close()
+
+
+@app.get("/health/cron", response_model=CronHealthResponse, tags=["General"])
+async def cron_health():
+    """Provide aggregated cron health information."""
+    session = get_session()
+    jobs: List[CronJobHealth] = []
+    try:
+        job_names = [row[0] for row in session.query(CronRunLog.job_name).distinct().all()]
+        now = datetime.now(timezone.utc)
+        day_ago = now - timedelta(hours=24)
+
+        for job in job_names:
+            last_run = (
+                session.query(CronRunLog)
+                .filter(CronRunLog.job_name == job)
+                .order_by(CronRunLog.started_at.desc())
+                .first()
+            )
+            consecutive_failures = 0
+            if last_run:
+                failure_runs = (
+                    session.query(CronRunLog)
+                    .filter(CronRunLog.job_name == job)
+                    .order_by(CronRunLog.started_at.desc())
+                    .limit(10)
+                    .all()
+                )
+                for run in failure_runs:
+                    if run.status == 'failed':
+                        consecutive_failures += 1
+                    else:
+                        break
+
+            runs_last_day = (
+                session.query(CronRunLog)
+                .filter(
+                    CronRunLog.job_name == job,
+                    CronRunLog.started_at >= day_ago
+                )
+                .count()
+            )
+
+            jobs.append(
+                CronJobHealth(
+                    job_name=job,
+                    last_run=last_run.completed_at if last_run else None,
+                    last_status=last_run.status if last_run else None,
+                    consecutive_failures=consecutive_failures,
+                    runs_last_24h=runs_last_day
+                )
+            )
+    finally:
+        session.close()
+
+    validation_stats = validator.get_validation_stats()
+
+    return CronHealthResponse(
+        jobs=jobs,
+        validation_accuracy=validation_stats.get('overall_accuracy'),
+        total_validated=validation_stats.get('total_validated')
+    )
 
 
 @app.post("/predict", response_model=PredictionResponse, tags=["Predictions"])

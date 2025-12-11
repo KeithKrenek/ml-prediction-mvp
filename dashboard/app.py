@@ -31,7 +31,15 @@ if hasattr(st, 'secrets'):
 sys.path.append(str(Path(__file__).parent.parent))
 
 from src.predictor import TrumpPostPredictor
-from src.data.database import get_session, Post, Prediction, ContextSnapshot
+from src.data.database import (
+    get_session,
+    Post,
+    Prediction,
+    ContextSnapshot,
+    ModelEvaluation,
+    ModelVersion,
+    CronRunLog,
+)
 from src.validation.validator import PredictionValidator
 from src.context.context_gatherer import RealTimeContextGatherer
 
@@ -169,16 +177,153 @@ def load_predictions(limit=20):
         
         data = []
         for pred in predictions:
+            timing_error = pred.timing_error_hours
+            status = 'missed'
+            if pred.was_correct:
+                status = 'correct'
+            elif pred.actual_post_id:
+                status = 'late'
+
             data.append({
                 'Predicted At': pred.predicted_at,
                 'Predicted Time': pred.predicted_time,
+                'Actual Time': pred.actual_time,
+                'Timing Error (h)': timing_error,
+                'Status': status,
                 'Content Preview': pred.predicted_content[:50] + '...',
                 'Timing Confidence': pred.predicted_time_confidence,
                 'Content Confidence': pred.predicted_content_confidence,
-                'Actual Time': pred.actual_time,
-                'Accuracy': pred.bertscore_f1
+                'Content Similarity': pred.bertscore_f1
             })
         
+        return pd.DataFrame(data)
+    finally:
+        session.close()
+
+
+@st.cache_data(ttl=300)
+def load_evaluation_metrics():
+    """Load the most recent timing and content evaluation metrics."""
+    session = get_session()
+    try:
+        timing_eval = (
+            session.query(ModelEvaluation)
+            .join(ModelVersion, ModelEvaluation.model_version_id == ModelVersion.version_id)
+            .filter(ModelVersion.model_type == 'timing')
+            .order_by(ModelEvaluation.evaluated_at.desc())
+            .first()
+        )
+        content_eval = (
+            session.query(ModelEvaluation)
+            .join(ModelVersion, ModelEvaluation.model_version_id == ModelVersion.version_id)
+            .filter(ModelVersion.model_type == 'content')
+            .order_by(ModelEvaluation.evaluated_at.desc())
+            .first()
+        )
+
+        def serialize(eval_row):
+            if not eval_row:
+                return None
+            return {
+                'mae_hours': eval_row.mae_hours,
+                'within_6h_accuracy': eval_row.within_6h_accuracy,
+                'within_24h_accuracy': eval_row.within_24h_accuracy,
+                'bertscore_f1': eval_row.bertscore_f1,
+                'evaluated_at': eval_row.evaluated_at
+            }
+
+        return {
+            'timing': serialize(timing_eval),
+            'content': serialize(content_eval)
+        }
+    finally:
+        session.close()
+
+
+@st.cache_data(ttl=300)
+def load_latest_prediction_context():
+    """Fetch context metadata for the most recent prediction."""
+    session = get_session()
+    try:
+        latest_prediction = (
+            session.query(Prediction)
+            .order_by(Prediction.predicted_at.desc())
+            .first()
+        )
+        if latest_prediction and latest_prediction.context_data:
+            return latest_prediction.context_data
+        return None
+    finally:
+        session.close()
+
+
+@st.cache_data(ttl=300)
+def load_cron_runs(limit=50):
+    """Fetch recent cron job executions."""
+    session = get_session()
+    try:
+        runs = (
+            session.query(CronRunLog)
+            .order_by(CronRunLog.started_at.desc())
+            .limit(limit)
+            .all()
+        )
+        data = []
+        for run in runs:
+            data.append({
+                'Job': run.job_name,
+                'Status': run.status,
+                'Started': run.started_at,
+                'Completed': run.completed_at,
+                'Records': run.records_processed,
+                'API Calls': run.api_calls,
+                'Error': run.error_message,
+                'Metadata': run.extra_metadata
+            })
+        return pd.DataFrame(data)
+    finally:
+        session.close()
+
+
+@st.cache_data(ttl=300)
+def load_prediction_actual_pairs(days_back=30):
+    """Return DataFrame linking predictions to actual outcomes."""
+    session = get_session()
+    cutoff = datetime.now() - timedelta(days=days_back)
+    try:
+        predictions = (
+            session.query(Prediction)
+            .filter(Prediction.predicted_at >= cutoff)
+            .order_by(Prediction.predicted_at.asc())
+            .all()
+        )
+        data = []
+        for pred in predictions:
+            actual_time = pred.actual_time
+            timing_error = None
+            if actual_time and pred.predicted_time:
+                timing_error = (actual_time - pred.predicted_time).total_seconds() / 3600
+            status = 'open'
+            if pred.was_correct:
+                status = 'correct'
+            elif pred.actual_post_id:
+                status = 'matched'
+            elif actual_time:
+                status = 'late'
+
+            data.append({
+                'Prediction ID': pred.prediction_id,
+                'Predicted At': pred.predicted_at,
+                'Predicted Time': pred.predicted_time,
+                'Actual Time': actual_time,
+                'Timing Error (h)': timing_error,
+                'Status': status,
+                'Timing Confidence': pred.predicted_time_confidence,
+                'Content Confidence': pred.predicted_content_confidence,
+                'Similarity': pred.bertscore_f1,
+                'Predicted Content': pred.predicted_content,
+                'Actual Content': pred.actual_content,
+            })
         return pd.DataFrame(data)
     finally:
         session.close()
@@ -335,74 +480,180 @@ if page == "🎯 Make Prediction":
 # ============================================================================
 
 elif page == "📊 Dashboard":
-    st.title("📊 Analytics Dashboard")
-    
-    # Load data
-    posts_df = load_recent_posts(limit=100)
-    predictions_df = load_predictions()
-    
-    if not posts_df.empty:
-        # Posting frequency over time
-        st.markdown("### Posting Frequency")
-        
-        # Resample by day
-        daily_posts = posts_df.set_index('Date').resample('D').size().reset_index(name='Posts')
-        
-        fig = px.line(
-            daily_posts,
-            x='Date',
-            y='Posts',
-            title='Posts Per Day (Last 100 Posts)'
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Posting by hour of day
-        st.markdown("### Posting Patterns by Hour")
-        
-        posts_df['Hour'] = pd.to_datetime(posts_df['Date']).dt.hour
-        hourly = posts_df.groupby('Hour').size().reset_index(name='Count')
-        
-        fig = px.bar(
-            hourly,
-            x='Hour',
-            y='Count',
-            title='Posts by Hour of Day',
-            labels={'Hour': 'Hour of Day (EST)', 'Count': 'Number of Posts'}
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Engagement metrics
-        st.markdown("### Engagement Metrics")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        col1.metric(
-            "Avg Replies",
-            f"{posts_df['Replies'].mean():.0f}",
-            f"{posts_df['Replies'].std():.0f} std"
-        )
-        col2.metric(
-            "Avg Reblogs",
-            f"{posts_df['Reblogs'].mean():.0f}",
-            f"{posts_df['Reblogs'].std():.0f} std"
-        )
-        col3.metric(
-            "Avg Favorites",
-            f"{posts_df['Favorites'].mean():.0f}",
-            f"{posts_df['Favorites'].std():.0f} std"
-        )
-    
+    st.title("📊 Prediction Performance Dashboard")
+
+    timeline_days = st.slider("Timeline window (days)", min_value=7, max_value=90, value=30, step=7)
+    pairs_df = load_prediction_actual_pairs(days_back=timeline_days)
+    cron_df = load_cron_runs(limit=60)
+
+    eval_metrics = load_evaluation_metrics()
+    timing_eval = eval_metrics.get('timing') or {}
+    content_eval = eval_metrics.get('content') or {}
+
+    st.subheader("Accuracy Overview")
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("Timing MAE (h)", f"{timing_eval.get('mae_hours', 0):.2f}" if timing_eval.get('mae_hours') else "N/A")
+    col_b.metric("Within 6h", f"{timing_eval.get('within_6h_accuracy', 0):.1%}" if timing_eval.get('within_6h_accuracy') is not None else "N/A")
+    col_c.metric("Within 24h", f"{timing_eval.get('within_24h_accuracy', 0):.1%}" if timing_eval.get('within_24h_accuracy') is not None else "N/A")
+    col_d.metric("Avg Content Similarity", f"{content_eval.get('bertscore_f1', 0):.2f}" if content_eval.get('bertscore_f1') else "N/A")
+
+    if not pairs_df.empty:
+        status_options = ['correct', 'matched', 'late', 'open']
+        default_status = [s for s in status_options if s in pairs_df['Status'].unique()]
+        selected_statuses = st.multiselect("Filter statuses", options=status_options, default=default_status)
+        filtered = pairs_df[pairs_df['Status'].isin(selected_statuses)]
+
+        st.subheader("Timeline: Predictions vs Actual Posts")
+        if filtered.empty:
+            st.info("No predictions in this window with the selected filters.")
+        else:
+            timeline_fig = go.Figure()
+            color_map = {
+                'correct': '#2ecc71',
+                'matched': '#f1c40f',
+                'late': '#e67e22',
+                'open': '#e74c3c'
+            }
+
+            # Actual posts trace
+            actual_points = filtered.dropna(subset=['Actual Time'])
+            if not actual_points.empty:
+                timeline_fig.add_trace(go.Scatter(
+                    x=actual_points['Actual Time'],
+                    y=['Actual'] * len(actual_points),
+                    mode='markers',
+                    marker=dict(size=12, color='#3498db'),
+                    name='Actual Post',
+                    hovertext=actual_points['Actual Content'].str[:140]
+                ))
+
+            # Prediction trace per status
+            for status, group in filtered.groupby('Status'):
+                timeline_fig.add_trace(go.Scatter(
+                    x=group['Predicted Time'],
+                    y=['Prediction'] * len(group),
+                    mode='markers',
+                    marker=dict(size=12, color=color_map.get(status, '#95a5a6'), symbol='diamond'),
+                    name=f"Predicted ({status})",
+                    hovertext=group['Predicted Content'].str[:140]
+                ))
+
+            # Connect matched predictions to actuals
+            for _, row in filtered.iterrows():
+                if pd.notnull(row['Actual Time']):
+                    timeline_fig.add_trace(go.Scatter(
+                        x=[row['Predicted Time'], row['Actual Time']],
+                        y=['Prediction', 'Actual'],
+                        mode='lines',
+                        line=dict(color=color_map.get(row['Status'], '#7f8c8d'), dash='dot'),
+                        showlegend=False,
+                        opacity=0.4
+                    ))
+
+            timeline_fig.update_layout(
+                yaxis=dict(title="", tickvals=['Prediction', 'Actual']),
+                xaxis_title="Time",
+                legend=dict(orientation='h'),
+                height=400,
+                plot_bgcolor='white'
+            )
+            st.plotly_chart(timeline_fig, use_container_width=True)
+
+            st.subheader("Timing Error Distribution")
+            error_df = filtered.dropna(subset=['Timing Error (h)'])
+            if error_df.empty:
+                st.info("No timing error data yet.")
+            else:
+                error_df['Abs Error (h)'] = error_df['Timing Error (h)'].abs()
+                fig_error = px.histogram(
+                    error_df,
+                    x='Abs Error (h)',
+                    color='Status',
+                    nbins=20,
+                    title='Absolute Timing Error',
+                    labels={'Abs Error (h)': 'Absolute Hours'}
+                )
+                st.plotly_chart(fig_error, use_container_width=True)
+
+                st.subheader("Content Similarity Trend")
+                sim_df = error_df.dropna(subset=['Similarity'])
+                if sim_df.empty:
+                    st.info("No similarity scores yet.")
+                else:
+                    fig_similarity = px.line(
+                        sim_df,
+                        x='Predicted At',
+                        y='Similarity',
+                        color='Status',
+                        title='Content Similarity Over Time'
+                    )
+                    st.plotly_chart(fig_similarity, use_container_width=True)
+
+            st.subheader("Prediction vs Actual Table")
+            display_cols = [
+                'Predicted At',
+                'Predicted Time',
+                'Actual Time',
+                'Timing Error (h)',
+                'Similarity',
+                'Status',
+                'Predicted Content',
+                'Actual Content'
+            ]
+            st.dataframe(
+                filtered.sort_values('Predicted At', ascending=False)[display_cols],
+                use_container_width=True,
+                hide_index=True
+            )
     else:
-        st.warning("No posts in database yet. Run data collection first.")
-    
-    # Predictions performance
-    if not predictions_df.empty:
-        st.markdown("### Prediction History")
+        st.warning("No predictions available yet. Run cron jobs to generate data.")
+
+    latest_prediction_context = load_latest_prediction_context()
+    if latest_prediction_context:
+        st.subheader("Context Signals at Last Prediction")
+        c1, c2, c3 = st.columns(3)
+        headlines = latest_prediction_context.get('top_headlines') or []
+        if headlines:
+            c1.markdown("**Top Headlines**")
+            for headline in headlines[:3]:
+                c1.write(f"- {headline.get('title')}")
+        else:
+            c1.write("No headlines captured")
+
+        trends = latest_prediction_context.get('trending_keywords') or []
+        if trends:
+            c2.markdown("**Trending Topics**")
+            c2.write(", ".join(trends[:8]))
+        else:
+            c2.write("No trend data")
+
+        market_sentiment = latest_prediction_context.get('market_sentiment')
+        c3.metric("Market Sentiment", market_sentiment.capitalize() if market_sentiment else "Unknown")
+        similarity_metrics = latest_prediction_context.get('content_similarity_metrics')
+        if similarity_metrics:
+            c3.metric("Style Similarity", f"{similarity_metrics.get('composite_similarity', 0):.2f}")
+
+    st.subheader("Cron Activity")
+    if not cron_df.empty:
+        last_24h = cron_df[cron_df['Started'] >= (datetime.now() - timedelta(hours=24))]
+        grouped = last_24h.groupby('Job') if not last_24h.empty else cron_df.groupby('Job')
+        cols = st.columns(len(grouped))
+        for col, (job, frame) in zip(cols, grouped):
+            success_rate = (frame['Status'] == 'success').mean() * 100 if len(frame) else 0
+            total_api = frame['API Calls'].fillna(0).sum()
+            col.metric(
+                job.title(),
+                f"{len(frame)} runs",
+                f"{success_rate:.0f}% success | {total_api:.0f} API calls"
+            )
+
         st.dataframe(
-            predictions_df,
+            cron_df[['Job', 'Status', 'Started', 'Completed', 'Records', 'API Calls', 'Error']],
             use_container_width=True,
             hide_index=True
         )
+    else:
+        st.info("No cron run history found yet.")
 
 
 # ============================================================================

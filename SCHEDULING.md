@@ -216,6 +216,18 @@ Duration: 4.32 seconds
 ============================================================
 ```
 
+### Cron Health Endpoint
+
+- The FastAPI service now exposes `GET /health/cron`, summarizing:
+  - Last run timestamp & status for each cron job
+  - Consecutive failures (useful for alerts)
+  - Number of runs in the past 24 hours
+- Use it with Render health checks or UptimeRobot to ensure cron jobs are firing before/after upgrading paid plans.
+
+```bash
+curl https://trump-prediction-api.onrender.com/health/cron | jq
+```
+
 ### Testing Cron Script Locally
 
 Test the cron script before deploying:

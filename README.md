@@ -160,6 +160,15 @@ Output example:
 
 ### Automated Predictions (NEW! ⏰)
 
+### Fast Smoke Test
+
+Run the lightweight smoke test to ensure imports and DB connectivity work (used by CI):
+
+```bash
+python scripts/smoke_test.py
+```
+
+
 The system now supports **automatic prediction scheduling**:
 
 **Option 1: In-Process Scheduler (Development)**
@@ -183,6 +192,9 @@ uvicorn src.api.main:app --reload
 ```bash
 # Check scheduler status
 curl http://localhost:8000/scheduler/status
+
+# Cron health summary (new)
+curl http://localhost:8000/health/cron
 
 # Enable/disable scheduler
 curl -X POST http://localhost:8000/scheduler/control \
