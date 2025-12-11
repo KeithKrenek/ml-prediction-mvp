@@ -191,15 +191,27 @@ class TrumpPostPredictor:
     
     def _save_prediction(self, prediction):
         """Save prediction to database"""
+        import pandas as pd
+        
+        # Convert numpy/pandas types to Python native types for PostgreSQL compatibility
+        def to_native(val):
+            if val is None:
+                return None
+            if hasattr(val, 'item'):  # numpy types
+                return val.item()
+            if isinstance(val, pd.Timestamp):
+                return val.to_pydatetime()
+            return val
+        
         session = get_session()
         
         db_prediction = Prediction(
             prediction_id=prediction['prediction_id'],
-            predicted_at=prediction['predicted_at'],
-            predicted_time=prediction['predicted_time'],
-            predicted_time_confidence=prediction['timing_confidence'],
+            predicted_at=to_native(prediction['predicted_at']),
+            predicted_time=to_native(prediction['predicted_time']),
+            predicted_time_confidence=to_native(prediction['timing_confidence']),
             predicted_content=prediction['predicted_content'],
-            predicted_content_confidence=prediction['content_confidence'],
+            predicted_content_confidence=to_native(prediction['content_confidence']),
             timing_model_version=prediction['timing_model_version'],
             content_model_version=prediction['content_model_version'],
             context_data=prediction['context']

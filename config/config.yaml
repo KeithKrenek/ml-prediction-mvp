@@ -8,7 +8,7 @@ data_collection:
   
 # Timing Model Configuration
 timing_model:
-  type: "ntpp"  # Options: "prophet", "ntpp" (neural_tpp)
+  type: "prophet"  # Options: "prophet", "ntpp" (neural_tpp)
 
   # Prophet Configuration (traditional time-series)
   prophet:
