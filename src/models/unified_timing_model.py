@@ -338,12 +338,25 @@ class UnifiedTimingPredictor:
         raise ValueError(f"Unknown model type: {self.active_model_type}")
 
     def _predict_ntpp(self, features_df: pd.DataFrame) -> Optional[Dict]:
-        """Make prediction with NTPP."""
+        """Make prediction with NTPP including uncertainty quantification."""
+        ntpp_config = self.config.get('neural_tpp', {})
+        
         prediction = self.model.predict(
             features_df,
             feature_cols=self.feature_cols,
-            sequence_length=20
+            sequence_length=ntpp_config.get('sequence_length', 20),
+            n_samples=100,
+            mc_dropout_samples=5,
+            return_structured=False  # Return dict for compatibility
         )
+        
+        # Add lower/upper bounds for consistency with Prophet output
+        if prediction and 'ci_lower_hours' in prediction:
+            last_post_time = features_df['created_at'].iloc[-1]
+            if hasattr(last_post_time, 'to_pydatetime'):
+                last_post_time = last_post_time.to_pydatetime()
+            prediction['lower_bound'] = prediction['ci_lower_hours']
+            prediction['upper_bound'] = prediction['ci_upper_hours']
 
         return prediction
 

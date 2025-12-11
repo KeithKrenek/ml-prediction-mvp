@@ -18,6 +18,7 @@ from src.models.unified_timing_model import UnifiedTimingPredictor
 from src.models.content_model import ContentGenerator, ContextGatherer
 from src.data.database import get_session, Prediction
 from src.models.model_registry import ModelRegistry
+from src.validation.calibration import ConfidenceCalibrator
 
 
 class TrumpPostPredictor:
@@ -25,7 +26,7 @@ class TrumpPostPredictor:
     Main prediction system combining timing and content models.
     """
     
-    def __init__(self):
+    def __init__(self, use_calibration: bool = True):
         self.config = self._load_global_config()
         timing_type = self.config.get('timing_model', {}).get('type', 'prophet')
         self.timing_model = UnifiedTimingPredictor(model_type=timing_type, config_path="config/config.yaml")
@@ -34,7 +35,26 @@ class TrumpPostPredictor:
         self.model_registry = ModelRegistry()
         self.latest_context = None
         
-        logger.info("Trump Post Predictor initialized")
+        # Initialize calibrator for confidence calibration
+        self.use_calibration = use_calibration
+        self.calibrator = None
+        if use_calibration:
+            self._init_calibrator()
+        
+        logger.info("Trump Post Predictor initialized (calibration=%s)", use_calibration)
+    
+    def _init_calibrator(self):
+        """Initialize and load confidence calibrator."""
+        try:
+            self.calibrator = ConfidenceCalibrator()
+            loaded = self.calibrator.load()
+            if loaded:
+                logger.info("Loaded existing calibration model")
+            else:
+                logger.info("No existing calibration model found - will use raw confidences")
+        except Exception as e:
+            logger.warning(f"Failed to initialize calibrator: {e}")
+            self.calibrator = None
 
     def _load_global_config(self):
         """Load global configuration for downstream components."""
@@ -117,12 +137,13 @@ class TrumpPostPredictor:
         except Exception as exc:
             logger.warning(f"Failed to register timing model: {exc}")
     
-    def predict(self, save_to_db=True):
+    def predict(self, save_to_db=True, apply_calibration=True):
         """
         Make a complete prediction: timing + content.
         
         Args:
             save_to_db: Whether to save prediction to database
+            apply_calibration: Whether to apply confidence calibration
             
         Returns:
             dict with complete prediction
@@ -159,6 +180,25 @@ class TrumpPostPredictor:
         if similarity_metrics:
             context_payload['content_similarity_metrics'] = similarity_metrics
         
+        # Get raw confidence values
+        timing_confidence_raw = timing_pred['confidence']
+        content_confidence_raw = content_pred['confidence']
+        
+        # Apply calibration if available
+        timing_confidence = timing_confidence_raw
+        content_confidence = content_confidence_raw
+        calibration_applied = False
+        
+        if apply_calibration and self.use_calibration and self.calibrator:
+            try:
+                timing_confidence = self.calibrator.calibrate_timing(timing_confidence_raw)
+                content_confidence = self.calibrator.calibrate_content(content_confidence_raw)
+                calibration_applied = True
+                logger.info(f"Calibration applied: timing {timing_confidence_raw:.2f}->{timing_confidence:.2f}, "
+                           f"content {content_confidence_raw:.2f}->{content_confidence:.2f}")
+            except Exception as e:
+                logger.warning(f"Calibration failed: {e}. Using raw confidences.")
+        
         # Combine predictions
         prediction = {
             'prediction_id': str(uuid.uuid4()),
@@ -166,17 +206,30 @@ class TrumpPostPredictor:
             
             # Timing
             'predicted_time': timing_pred['predicted_time'],
-            'timing_confidence': timing_pred['confidence'],
+            'timing_confidence': timing_confidence,
+            'timing_confidence_raw': timing_confidence_raw,
             'timing_model_version': timing_pred['model_version'],
             
             # Content
             'predicted_content': content_pred['content'],
-            'content_confidence': content_pred['confidence'],
+            'content_confidence': content_confidence,
+            'content_confidence_raw': content_confidence_raw,
             'content_similarity_metrics': similarity_metrics,
             'content_model_version': content_pred['model_version'],
             
             # Combined confidence
-            'overall_confidence': (timing_pred['confidence'] + content_pred['confidence']) / 2,
+            'overall_confidence': (timing_confidence + content_confidence) / 2,
+            
+            # Calibration metadata
+            'calibration_applied': calibration_applied,
+            
+            # Additional timing stats if available (from NTPP)
+            'timing_stats': {
+                k: timing_pred.get(k) for k in 
+                ['mean_hours', 'median_hours', 'std_hours', 'ci_lower_hours', 'ci_upper_hours',
+                 'prob_within_1h', 'prob_within_3h', 'prob_within_6h']
+                if k in timing_pred
+            },
             
             # Context
             'context': context_payload
@@ -188,6 +241,31 @@ class TrumpPostPredictor:
         
         logger.success("Prediction complete!")
         return prediction
+    
+    def calibrate_models(self, min_samples: int = 20) -> bool:
+        """
+        Run auto-calibration on historical data.
+        
+        Should be called periodically (e.g., weekly) to keep
+        calibration up to date.
+        
+        Args:
+            min_samples: Minimum validated predictions required
+            
+        Returns:
+            True if calibration successful
+        """
+        if self.calibrator is None:
+            self.calibrator = ConfidenceCalibrator()
+        
+        success = self.calibrator.auto_calibrate(min_samples=min_samples)
+        
+        if success:
+            logger.success("Model calibration complete")
+        else:
+            logger.warning("Calibration not updated (insufficient data or error)")
+        
+        return success
     
     def _save_prediction(self, prediction):
         """Save prediction to database"""
