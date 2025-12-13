@@ -558,19 +558,37 @@ class HistoricalPatternExtractor:
         # Get full features
         features = self.extract_all(df, timestamp_col)
         
-        # Get latest values
+        # Get latest values (handle None/NaN values safely)
         latest = features.iloc[-1]
         
-        is_in_burst = bool(latest.get('is_burst_post', 0) == 1)
-        current_burst_length = int(latest.get('burst_length', 0))
-        burst_momentum = float(latest.get('burst_momentum_3', 0.0))
-        prob_continuation = float(latest.get('prob_burst_continuation', 0.0))
-        typical_burst_length = float(latest.get('typical_burst_length', 3.0))
-        burst_intensity = float(latest.get('burst_intensity', 0.0))
+        def safe_float(val, default=0.0):
+            """Safely convert to float, handling None and NaN."""
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return default
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return default
+        
+        def safe_int(val, default=0):
+            """Safely convert to int, handling None and NaN."""
+            if val is None or (isinstance(val, float) and pd.isna(val)):
+                return default
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                return default
+        
+        is_in_burst = bool(safe_int(latest.get('is_burst_post', 0)) == 1)
+        current_burst_length = safe_int(latest.get('burst_length', 0))
+        burst_momentum = safe_float(latest.get('burst_momentum_3', 0.0))
+        prob_continuation = safe_float(latest.get('prob_burst_continuation', 0.0))
+        typical_burst_length = safe_float(latest.get('typical_burst_length', 3.0), 3.0)
+        burst_intensity = safe_float(latest.get('burst_intensity', 0.0))
         
         # Calculate expected next interval
         if is_in_burst:
-            expected_interval = float(latest.get('expected_burst_interval', 5.0))
+            expected_interval = safe_float(latest.get('expected_burst_interval', 5.0), 5.0)
             # Adjust based on momentum
             if burst_momentum < 0:  # Accelerating
                 expected_interval *= 0.8  # Expect faster
@@ -578,9 +596,9 @@ class HistoricalPatternExtractor:
                 expected_interval *= 1.2  # Expect slower
         else:
             # Not in burst - use average inter-post time
-            expected_interval = float(latest.get('time_since_last_minutes', 60.0))
+            expected_interval = safe_float(latest.get('time_since_last_minutes', 60.0), 60.0)
             # If we just ended a burst, expect longer gap
-            if len(features) > 1 and features.iloc[-2].get('is_burst_post', 0) == 1:
+            if len(features) > 1 and safe_int(features.iloc[-2].get('is_burst_post', 0)) == 1:
                 expected_interval *= 2.0  # Post-burst cooldown
         
         return BurstAnalysis(

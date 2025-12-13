@@ -146,10 +146,12 @@ class ContextFeatureExtractor:
             market_features = self._extract_market_features(context['market'])
             features.update(market_features)
         elif any(k in context for k in ['sp500_change_pct', 'dow_change_pct', 'market_sentiment']):
-            # Context has market data in a different format
+            # Context has market data in a different format (handle None values)
+            sp500_val = context.get('sp500_change_pct')
+            dow_val = context.get('dow_change_pct')
             market_proxy = {
-                'sp500_change': context.get('sp500_change_pct', 0),
-                'dow_change': context.get('dow_change_pct', 0)
+                'sp500_change': sp500_val if sp500_val is not None else 0,
+                'dow_change': dow_val if dow_val is not None else 0
             }
             market_features = self._extract_market_features(market_proxy)
             features.update(market_features)
@@ -257,12 +259,16 @@ class ContextFeatureExtractor:
         """Extract features from market data."""
         features = {}
 
-        # Market movement magnitude
-        sp500_change = market_data.get('sp500_change', 0)
-        dow_change = market_data.get('dow_change', 0)
+        # Market movement magnitude (handle None values)
+        sp500_change = market_data.get('sp500_change')
+        dow_change = market_data.get('dow_change')
+        
+        # Default to 0 if None
+        sp500_change = float(sp500_change) if sp500_change is not None else 0.0
+        dow_change = float(dow_change) if dow_change is not None else 0.0
 
-        features['market_sp500_change'] = float(sp500_change)
-        features['market_dow_change'] = float(dow_change)
+        features['market_sp500_change'] = sp500_change
+        features['market_dow_change'] = dow_change
         features['market_avg_change'] = (sp500_change + dow_change) / 2
 
         # Market movement magnitude (absolute)
