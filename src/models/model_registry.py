@@ -472,18 +472,27 @@ class ModelRegistry:
             # Compare models
             comparison = self.compare_models(prod_model.version_id, new_version_id)
 
-            if comparison['recommendation'] == 'promote':
-                logger.info(f"Auto-promoting {new_version_id}: {comparison['reason']}")
-                self.promote_to_production(new_version_id, comparison['reason'])
-                return True, comparison['reason']
+            # Handle incomplete comparison (missing evaluation data)
+            if comparison.get('comparison') == 'incomplete':
+                reason = comparison.get('reason', 'Missing evaluation data')
+                logger.warning(f"Cannot compare models: {reason}")
+                return False, reason
 
-            elif comparison['recommendation'] == 'reject':
-                logger.warning(f"Not promoting {new_version_id}: {comparison['reason']}")
-                return False, comparison['reason']
+            recommendation = comparison.get('recommendation')
+            reason = comparison.get('reason', 'No reason provided')
 
-            else:  # manual_review
-                logger.info(f"Manual review required for {new_version_id}: {comparison['reason']}")
-                return False, comparison['reason']
+            if recommendation == 'promote':
+                logger.info(f"Auto-promoting {new_version_id}: {reason}")
+                self.promote_to_production(new_version_id, reason)
+                return True, reason
+
+            elif recommendation == 'reject':
+                logger.warning(f"Not promoting {new_version_id}: {reason}")
+                return False, reason
+
+            else:  # manual_review or unknown
+                logger.info(f"Manual review required for {new_version_id}: {reason}")
+                return False, reason
 
         finally:
             session.close()
