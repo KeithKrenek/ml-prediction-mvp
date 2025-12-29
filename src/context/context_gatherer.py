@@ -758,9 +758,17 @@ def main():
     print("\n" + "-"*60)
     print("MARKET DATA")
     print("-"*60)
-    print(f"S&P 500: ${context['sp500_value']:.2f} ({context['sp500_change_pct']:+.2f}%)")
-    print(f"Dow Jones: ${context['dow_value']:.2f} ({context['dow_change_pct']:+.2f}%)")
-    print(f"Sentiment: {context['market_sentiment'].upper()}")
+    if context.get('sp500_value') is not None and context.get('sp500_change_pct') is not None:
+        print(f"S&P 500: ${context['sp500_value']:.2f} ({context['sp500_change_pct']:+.2f}%)")
+    else:
+        print("S&P 500: N/A (API unavailable)")
+    
+    if context.get('dow_value') is not None and context.get('dow_change_pct') is not None:
+        print(f"Dow Jones: ${context['dow_value']:.2f} ({context['dow_change_pct']:+.2f}%)")
+    else:
+        print("Dow Jones: N/A (API unavailable)")
+    
+    print(f"Sentiment: {context.get('market_sentiment', 'unknown').upper()}")
 
     print("\n" + "="*60)
     print("SUMMARY")

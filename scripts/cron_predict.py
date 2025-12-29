@@ -73,7 +73,9 @@ def main():
                 predictor.save_models()
                 logger.success("Models trained and saved successfully")
             else:
-                logger.info("Using existing trained models")
+                logger.info("Loading existing trained models...")
+                predictor.timing_model.load(str(model_path))
+                logger.success("Models loaded successfully")
 
             logger.info("Making prediction...")
             prediction = predictor.predict(save_to_db=True)

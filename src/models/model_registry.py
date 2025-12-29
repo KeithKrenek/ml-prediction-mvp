@@ -314,18 +314,18 @@ class ModelRegistry:
                 'overall_score': 0.0
             }
 
-        mae = np.mean(errors)
-        rmse = np.sqrt(np.mean(np.array(errors) ** 2))
-        median_error = np.median(errors)
+        mae = float(np.mean(errors))
+        rmse = float(np.sqrt(np.mean(np.array(errors) ** 2)))
+        median_error = float(np.median(errors))
 
-        within_6h = sum(1 for e in errors if e <= 6) / len(errors)
-        within_12h = sum(1 for e in errors if e <= 12) / len(errors)
-        within_24h = sum(1 for e in errors if e <= 24) / len(errors)
+        within_6h = float(sum(1 for e in errors if e <= 6) / len(errors))
+        within_12h = float(sum(1 for e in errors if e <= 12) / len(errors))
+        within_24h = float(sum(1 for e in errors if e <= 24) / len(errors))
 
         # Overall score: weighted combination (lower is better for MAE, higher for accuracy)
         # Normalize and combine: 70% within_6h + 30% (1 - normalized_mae)
         normalized_mae = max(0, 1 - (mae / 24))  # 24h = 0 score, 0h = 1 score
-        overall_score = 0.7 * within_6h + 0.3 * normalized_mae
+        overall_score = float(0.7 * within_6h + 0.3 * normalized_mae)
 
         return {
             'mae_hours': mae,
@@ -354,7 +354,7 @@ class ModelRegistry:
                 similarity = 1 - abs(pred_len - actual_len) / max(pred_len, actual_len)
                 length_similarities.append(similarity)
 
-        avg_length_sim = np.mean(length_similarities) if length_similarities else 0.5
+        avg_length_sim = float(np.mean(length_similarities)) if length_similarities else 0.5
 
         return {
             'bertscore_precision': None,

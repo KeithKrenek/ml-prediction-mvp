@@ -641,8 +641,11 @@ Generated post:"""
                     trending_context = f"Trending topics: {top_trends}"
                 if 'market_sentiment' in context:
                     sentiment = context['market_sentiment']
-                    sp_change = context.get('sp500_change_pct', 0)
-                    market_context = f"Market: {sentiment} (S&P {sp_change:+.1f}%)"
+                    sp_change = context.get('sp500_change_pct')
+                    if sp_change is not None:
+                        market_context = f"Market: {sentiment} (S&P {sp_change:+.1f}%)"
+                    else:
+                        market_context = f"Market: {sentiment}"
 
             examples = self.format_examples()
             context_section = "\n".join(filter(None, [time_context, news_context, trending_context, market_context]))

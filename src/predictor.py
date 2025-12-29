@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.models.unified_timing_model import UnifiedTimingPredictor
 from src.models.content_model import ContentGenerator, ContextGatherer
-from src.data.database import get_session, Prediction
+from src.data.database import get_session, Prediction, ContextSnapshot
 from src.models.model_registry import ModelRegistry
 from src.validation.calibration import ConfidenceCalibrator
 
@@ -297,6 +297,19 @@ class TrumpPostPredictor:
         
         session.add(db_prediction)
         session.commit()
+        
+        # Update context snapshot usage tracking
+        if prediction.get('context') and prediction['context'].get('snapshot_id'):
+            snapshot_id = prediction['context']['snapshot_id']
+            snapshot = session.query(ContextSnapshot).filter_by(snapshot_id=snapshot_id).first()
+            if snapshot:
+                snapshot.used_in_predictions += 1
+                if not snapshot.prediction_ids:
+                    snapshot.prediction_ids = []
+                snapshot.prediction_ids.append(prediction['prediction_id'])
+                session.commit()
+                logger.debug(f"Updated context snapshot {snapshot_id} usage count")
+        
         session.close()
         
         logger.info(f"Prediction saved to database: {prediction['prediction_id']}")
