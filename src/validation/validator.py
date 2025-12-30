@@ -104,8 +104,20 @@ class PredictionValidator:
         start_time = predicted_time - window
         end_time = predicted_time + window
 
+        logger.debug(f"Searching for posts between {start_time} and {end_time}")
+        logger.debug(f"  Predicted time: {predicted_time}")
+        logger.debug(f"  Window: ±{window_hours}h")
+
         session = get_session()
         try:
+            # First, check total posts in database
+            total_posts = session.query(Post).count()
+            logger.debug(f"  Total posts in database: {total_posts}")
+
+            if total_posts == 0:
+                logger.warning("  No posts in database at all!")
+                return None
+
             # Find posts within the time window
             posts = (
                 session.query(Post)
@@ -114,7 +126,32 @@ class PredictionValidator:
                 .all()
             )
 
+            logger.debug(f"  Posts found in window: {len(posts)}")
+
             if not posts:
+                # Show nearest posts to help diagnose
+                nearest_before = (
+                    session.query(Post)
+                    .filter(Post.created_at < start_time)
+                    .order_by(Post.created_at.desc())
+                    .first()
+                )
+                nearest_after = (
+                    session.query(Post)
+                    .filter(Post.created_at > end_time)
+                    .order_by(Post.created_at.asc())
+                    .first()
+                )
+
+                if nearest_before:
+                    hours_before = (predicted_time - nearest_before.created_at).total_seconds() / 3600
+                    logger.debug(f"  Nearest post BEFORE: {nearest_before.created_at} ({hours_before:.1f}h before)")
+
+                if nearest_after:
+                    hours_after = (nearest_after.created_at - predicted_time).total_seconds() / 3600
+                    logger.debug(f"  Nearest post AFTER: {nearest_after.created_at} ({hours_after:.1f}h after)")
+
+                logger.warning(f"  No posts within ±{window_hours}h window")
                 return None
 
             # Find the closest post by time
@@ -122,6 +159,9 @@ class PredictionValidator:
                 posts,
                 key=lambda p: abs((p.created_at - predicted_time).total_seconds())
             )
+
+            time_diff = abs((closest_post.created_at - predicted_time).total_seconds() / 3600)
+            logger.debug(f"  Found closest post: {closest_post.post_id} ({time_diff:.2f}h away)")
 
             return closest_post
 

@@ -461,6 +461,55 @@ def get_confidence_color(confidence):
         return "confidence-low"
 
 
+def get_data_freshness_status():
+    """Check if data is stale and return warning info"""
+    session = get_session()
+    try:
+        # Check latest post
+        latest_post = session.query(Post).order_by(Post.created_at.desc()).first()
+
+        if not latest_post:
+            return {
+                'status': 'critical',
+                'message': '⚠️ No posts in database',
+                'hours_since_update': None,
+                'last_collection': None,
+                'latest_post_time': None
+            }
+
+        hours_since_post = (datetime.now() - latest_post.created_at).total_seconds() / 3600
+
+        # Check last successful collection
+        latest_cron = (
+            session.query(CronRunLog)
+            .filter_by(job_name='collector', status='success')
+            .order_by(CronRunLog.started_at.desc())
+            .first()
+        )
+
+        last_collection = latest_cron.started_at if latest_cron else None
+
+        if hours_since_post > 72:  # 3 days
+            status = 'critical'
+            message = f'⚠️ Latest post is {hours_since_post:.0f}h old - data collection may be failing'
+        elif hours_since_post > 24:
+            status = 'warning'
+            message = f'⚠️ Latest post is {hours_since_post:.0f}h old - check collector'
+        else:
+            status = 'ok'
+            message = f'✓ Data is fresh ({hours_since_post:.1f}h old)'
+
+        return {
+            'status': status,
+            'message': message,
+            'hours_since_update': hours_since_post,
+            'last_collection': last_collection,
+            'latest_post_time': latest_post.created_at
+        }
+    finally:
+        session.close()
+
+
 # ============================================================================
 # Sidebar
 # ============================================================================
@@ -1009,12 +1058,33 @@ elif page == "🎯 Validation Timeline":
 
 elif page == "📝 Recent Posts":
     st.title("📝 Recent Posts")
-    
+
+    # Show data freshness warning
+    freshness = get_data_freshness_status()
+
+    if freshness['status'] == 'critical':
+        st.error(freshness['message'])
+    elif freshness['status'] == 'warning':
+        st.warning(freshness['message'])
+    else:
+        st.success(freshness['message'])
+
+    # Show collection status
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Latest Post",
+                freshness['latest_post_time'].strftime('%Y-%m-%d %H:%M') if freshness['latest_post_time'] else 'None')
+    col2.metric("Hours Since Latest",
+                f"{freshness['hours_since_update']:.1f}h" if freshness['hours_since_update'] else 'N/A')
+    col3.metric("Last Collection",
+                freshness['last_collection'].strftime('%Y-%m-%d %H:%M') if freshness['last_collection'] else 'Never')
+
+    st.markdown("---")
+
     # Show database connection info
     db_type, db_status, is_production = get_database_info()
     if not is_production:
         st.warning(f"⚠️ {db_status} - Make sure DATABASE_URL is configured in Streamlit secrets")
-    
+
     posts_df = load_recent_posts(limit=50)
     
     if not posts_df.empty:

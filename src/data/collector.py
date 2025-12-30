@@ -223,44 +223,96 @@ class DataCollector:
         Returns number of new posts saved.
         """
         if not posts:
+            logger.warning(f"save_posts called with empty posts list from {source}")
             return 0
-        
+
+        logger.info(f"Attempting to save {len(posts)} posts from {source}")
+
         session = get_session()
         new_posts = 0
-        
+        duplicate_posts = 0
+        failed_posts = 0
+
         try:
-            for post_data in posts:
+            for i, post_data in enumerate(posts):
                 try:
                     # Normalize data
                     normalized = self.normalize_post_data(post_data, source)
-                    
+                    post_id = normalized['post_id']
+
                     # Check if post already exists
-                    existing = session.query(Post).filter_by(post_id=normalized['post_id']).first()
-                    
+                    existing = session.query(Post).filter_by(post_id=post_id).first()
+
                     if existing:
+                        duplicate_posts += 1
+                        if i < 3:  # Log first 3 duplicates
+                            logger.debug(f"Duplicate post {post_id} from {existing.created_at}")
                         continue
-                    
+
                     # Create new post
                     post = Post(**normalized)
                     session.add(post)
                     new_posts += 1
-                
+
+                    if i < 3:  # Log first 3 new posts
+                        logger.info(f"New post: {post_id} from {normalized['created_at']}")
+
                 except Exception as e:
-                    logger.warning(f"Failed to save post: {e}")
+                    failed_posts += 1
+                    logger.warning(f"Failed to process post {i}: {e}")
+                    logger.debug(f"Post data: {post_data}")
                     continue
-            
+
             session.commit()
-            logger.success(f"Saved {new_posts} new posts from {source}")
-        
+
+            logger.info(f"Save summary - Source: {source}")
+            logger.info(f"  Total received: {len(posts)}")
+            logger.info(f"  New posts saved: {new_posts}")
+            logger.info(f"  Duplicates skipped: {duplicate_posts}")
+            logger.info(f"  Failed to process: {failed_posts}")
+
         except Exception as e:
             logger.error(f"Database error: {e}")
             session.rollback()
-        
+
         finally:
             session.close()
-        
+
         return new_posts
-    
+
+    def get_database_stats(self) -> Dict:
+        """Get current database statistics"""
+        session = get_session()
+        try:
+            total_posts = session.query(Post).count()
+            if total_posts == 0:
+                return {'total_posts': 0, 'latest_post': None}
+
+            latest_post = session.query(Post).order_by(Post.created_at.desc()).first()
+            return {
+                'total_posts': total_posts,
+                'latest_post': latest_post.created_at if latest_post else None
+            }
+        finally:
+            session.close()
+
+    def validate_api_response(self, posts: List[Dict], source: str) -> List[Dict]:
+        """Validate and filter API responses"""
+        if not posts:
+            logger.warning(f"{source}: Empty response array")
+            return []
+
+        valid_posts = []
+        for i, post in enumerate(posts):
+            # Check required fields
+            if not post.get('id') or not post.get('created_at'):
+                logger.warning(f"{source}: Post {i} missing required fields (id or created_at)")
+                continue
+            valid_posts.append(post)
+
+        logger.info(f"{source}: {len(valid_posts)}/{len(posts)} posts passed validation")
+        return valid_posts
+
     def collect_once(self) -> int:
         """
         Run one collection cycle, trying all sources.
@@ -268,6 +320,12 @@ class DataCollector:
         """
         logger.info("="*60)
         logger.info(f"Starting collection cycle at {datetime.now()}")
+
+        # Show current database state
+        db_stats = self.get_database_stats()
+        logger.info(f"Current DB state:")
+        logger.info(f"  Total posts: {db_stats['total_posts']}")
+        logger.info(f"  Latest post: {db_stats['latest_post']}")
         logger.info("="*60)
         
         total_new = 0
@@ -282,28 +340,40 @@ class DataCollector:
         for source_name, fetch_func in sources:
             try:
                 logger.info(f"\nTrying source: {source_name}")
+                logger.info("-" * 40)
+
                 posts = fetch_func()
-                
-                if posts:
-                    new_posts = self.save_posts(posts, source_name)
-                    total_new += new_posts
-                    
-                    # If we got new posts, no need to try other sources
-                    if new_posts > 0:
-                        logger.success(f"✅ Got {new_posts} new posts from {source_name}")
-                        break
+
+                # Validate API response
+                valid_posts = self.validate_api_response(posts, source_name)
+
+                if not valid_posts:
+                    logger.info(f"{source_name}: No valid posts returned, trying next source...")
+                    continue
+
+                new_posts = self.save_posts(valid_posts, source_name)
+                total_new += new_posts
+
+                # Only break if we got NEW posts (not just duplicates)
+                if new_posts > 0:
+                    logger.success(f"✓ Got {new_posts} NEW posts from {source_name}")
+                    break
                 else:
-                    logger.info(f"No posts from {source_name}, trying next source...")
-            
+                    logger.info(f"{source_name}: All {len(valid_posts)} posts were duplicates")
+                    logger.info(f"Trying next source...")
+
             except Exception as e:
                 logger.error(f"Error with {source_name}: {e}")
+                logger.exception("Full traceback:")
                 continue
         
         self.last_fetch_time = datetime.now()
-        
-        logger.info(f"\nCollection cycle complete. Total new posts: {total_new}")
+
+        logger.info(f"\nCollection cycle complete:")
+        logger.info(f"  Total new posts: {total_new}")
+        logger.info(f"  Database now has: {self.get_database_stats()['total_posts']} total posts")
         logger.info("="*60 + "\n")
-        
+
         return total_new
     
     def start_continuous_collection(self, interval_minutes: int = 5):

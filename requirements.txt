@@ -1,50 +1,46 @@
-# Core ML & Data Processing
+# Core Data Processing & ML
 pandas==2.1.4
 numpy==1.26.2
 scikit-learn==1.4.0
-
-# Timing Model
-prophet==1.1.5
-cmdstanpy==1.2.2  # Required backend for Prophet
-torch==2.1.2  # For Neural Temporal Point Process (NTPP)
-
-# Content Model
-anthropic>=0.45.2  # Updated SDK with httpx 0.28+ compatibility fix
-httpx>=0.28.0  # Required for anthropic SDK compatibility
-
-# API & Web
-fastapi==0.109.0
-uvicorn[standard]==0.27.0
-pydantic==2.5.3
-python-multipart==0.0.6
 
 # Database
 sqlalchemy==2.0.25
 psycopg2-binary==2.9.11
 
-# Data Collection
+# Timing & Forecasting Models
+prophet==1.1.5
+cmdstanpy==1.2.2
+torch==2.1.2
+
+# Content Models & LLM Integration
+anthropic>=0.45.2
+httpx>=0.28.0
+bert-score==0.3.13
+sentence-transformers==2.3.1
+spacy==3.7.2
+
+# API & Web Server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+python-multipart==0.0.6
+
+# Data Collection & Real-time Context
 requests==2.31.0
 beautifulsoup4==4.12.3
 apify-client==1.6.3
-
-# Real-time Context Integration
 newsapi-python==0.2.7
 pytrends==4.9.2
 feedparser==6.0.11
 yfinance==0.2.36
 
-# Utilities
+# Dashboarding
+streamlit==1.30.0
+plotly==5.18.0
+
+# Utilities & Scheduling
 python-dotenv==1.0.0
 pyyaml==6.0.1
 loguru==0.7.2
 schedule==1.2.2
 apscheduler==3.10.4
-
-# Dashboard
-streamlit==1.30.0
-plotly==5.18.0
-
-# Evaluation & Similarity Metrics
-bert-score==0.3.13
-sentence-transformers==2.3.1
-spacy==3.7.2
